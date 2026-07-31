@@ -1,0 +1,6 @@
+.env
+bin/
+*.log
+.DS_Store
+configs/config.yaml
+config.yaml

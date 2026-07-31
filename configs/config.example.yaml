@@ -1,0 +1,29 @@
+app:
+  name: mocksvr
+  env: development
+
+server:
+  host: 0.0.0.0
+  port: 8080
+
+database:
+  url: postgres://mocksvr:mocksvr@localhost:5432/mocksvr?sslmode=disable
+
+cache:
+  redis:
+    addr: localhost:6379
+    password: ""
+    db: 0
+    ttl: 60s
+
+# AI providers are OpenAI-compatible. OpenAI and OpenRouter require an API key;
+# Ollama runs locally and does not.
+ai:
+  provider: ollama          # openai | ollama | openrouter (empty disables AI)
+  base_url: http://localhost:11434/v1
+  api_key: ""
+  model: llama3.2
+  timeout: 60s
+
+log:
+  level: info

@@ -1,0 +1,73 @@
+package importer
+
+import (
+	"bytes"
+	"errors"
+	"io"
+	"strings"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/rs/zerolog"
+
+	"github.com/profause/aimocksvr/internal/api"
+)
+
+// Handler exposes the OpenAPI importer over HTTP.
+type Handler struct {
+	svc    *Service
+	logger *zerolog.Logger
+}
+
+// NewHandler creates an importer Handler.
+func NewHandler(svc *Service, logger *zerolog.Logger) *Handler {
+	return &Handler{svc: svc, logger: logger}
+}
+
+// Register wires the import routes onto the given router group.
+func (h *Handler) Register(r fiber.Router) {
+	r.Post("/imports/openapi", h.ImportOpenAPI)
+}
+
+// ImportOpenAPI accepts an OpenAPI document as the request body (JSON or
+// YAML) or as a multipart file upload in the "file" field, parses it and
+// registers every operation as a mock endpoint.
+func (h *Handler) ImportOpenAPI(c fiber.Ctx) error {
+	data, err := readDocument(c)
+	if err != nil {
+		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, err.Error())
+	}
+
+	result, err := h.svc.Import(c.Context(), data)
+	if err != nil {
+		var perr *ParseError
+		if errors.As(err, &perr) {
+			return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, perr.Message)
+		}
+		h.logger.Error().Err(err).Msg("import failed")
+		return api.Fail(c, fiber.StatusInternalServerError, api.CodeInternalError, "internal server error")
+	}
+	return api.Created(c, result)
+}
+
+// readDocument extracts the OpenAPI document bytes from the request, either
+// as a multipart "file" field or the raw body.
+func readDocument(c fiber.Ctx) ([]byte, error) {
+	if ct := c.Get("Content-Type"); strings.HasPrefix(ct, "multipart/form-data") {
+		fh, err := c.FormFile("file")
+		if err != nil {
+			return nil, errors.New("multipart field 'file' is required")
+		}
+		f, err := fh.Open()
+		if err != nil {
+			return nil, errors.New("failed to read uploaded file")
+		}
+		defer f.Close()
+		return io.ReadAll(f)
+	}
+
+	data := c.Body()
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, errors.New("an OpenAPI document body is required")
+	}
+	return data, nil
+}

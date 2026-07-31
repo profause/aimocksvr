@@ -1,0 +1,135 @@
+package router
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
+	"github.com/rs/zerolog"
+
+	"github.com/profause/aimocksvr/internal/api"
+	"github.com/profause/aimocksvr/internal/generator"
+	"github.com/profause/aimocksvr/internal/models"
+	"github.com/profause/aimocksvr/internal/validator"
+)
+
+// EndpointStore is the slice of the endpoint repository the dynamic router
+// needs: resolve active endpoints and record served requests.
+type EndpointStore interface {
+	ListActiveByMethod(ctx context.Context, method string) ([]models.Endpoint, error)
+	CreateHistory(ctx context.Context, h *models.RequestHistory) error
+}
+
+// DynamicHandler resolves inbound requests against the endpoint registry and
+// serves a generated response. It is registered as a catch-all, so endpoints
+// are served from the database with no restart and no static routes.
+type DynamicHandler struct {
+	store     EndpointStore
+	generator generator.Generator
+	validate  validator.Validator
+	logger    *zerolog.Logger
+}
+
+// NewDynamicHandler creates a dynamic mock endpoint handler.
+func NewDynamicHandler(store EndpointStore, gen generator.Generator, v validator.Validator, logger *zerolog.Logger) *DynamicHandler {
+	return &DynamicHandler{store: store, generator: gen, validate: v, logger: logger}
+}
+
+// Serve resolves the current request to an endpoint and writes the generated
+// response. It returns a 404 envelope when no endpoint matches.
+func (h *DynamicHandler) Serve(c fiber.Ctx) error {
+	ctx := c.Context()
+	method := c.Method()
+	path := c.Path()
+
+	endpoints, err := h.store.ListActiveByMethod(ctx, method)
+	if err != nil {
+		h.logger.Error().Err(err).Str("method", method).Msg("failed to resolve mock endpoints")
+		return api.Fail(c, fiber.StatusInternalServerError, api.CodeInternalError, "internal server error")
+	}
+
+	e, params, ok := bestMatch(endpoints, path)
+	if !ok {
+		return api.Fail(c, fiber.StatusNotFound, api.CodeNotFound,
+			fmt.Sprintf("no mock endpoint matches %s %s", method, path))
+	}
+
+	// Endpoints may declare a request schema; a non-conforming body is
+	// rejected before any generation, so every generation path (AI, faker,
+	// stateful) enforces the request contract uniformly.
+	if err := validateRequestBody(h.validate, e, c.Body()); err != nil {
+		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, err.Error())
+	}
+
+	req := &generator.Request{
+		Endpoint:   e,
+		PathParams: nonNilParams(params),
+		Query:      c.Queries(),
+		Headers:    headersMap(c.GetReqHeaders()),
+		Body:       c.Body(),
+	}
+
+	start := time.Now()
+	resp, err := h.generator.Generate(ctx, req)
+	if err != nil {
+		h.logger.Error().Err(err).Str("endpoint_id", e.ID.String()).Msg("mock response generation failed")
+		return api.Fail(c, fiber.StatusInternalServerError, api.CodeInternalError, "internal server error")
+	}
+
+	h.recordHistory(ctx, e, c.Body(), resp.Body, time.Since(start))
+
+	c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+	c.Status(resp.Status)
+	return c.Send(resp.Body)
+}
+
+// validateRequestBody checks the request body against the endpoint's request
+// schema. An empty body is rejected with a clear message, then the document is
+// validated. A missing request schema passes everything through.
+func validateRequestBody(v validator.Validator, e *models.Endpoint, body []byte) error {
+	if strings.TrimSpace(e.RequestSchema) == "" {
+		return nil
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return errors.New("request body is required")
+	}
+	if err := v.ValidateRequest([]byte(e.RequestSchema), body); err != nil {
+		return fmt.Errorf("request body does not match the endpoint request schema: %w", err)
+	}
+	return nil
+}
+
+// recordHistory persists a served request. Failures are logged but never fail
+// the mock request itself.
+func (h *DynamicHandler) recordHistory(ctx context.Context, e *models.Endpoint, reqBody, respBody []byte, latency time.Duration) {
+	history := &models.RequestHistory{
+		ID:         uuid.New(),
+		EndpointID: e.ID,
+		Request:    string(reqBody),
+		Response:   string(respBody),
+		Latency:    latency.Milliseconds(),
+	}
+	if err := h.store.CreateHistory(ctx, history); err != nil {
+		h.logger.Warn().Err(err).Str("endpoint_id", e.ID.String()).Msg("failed to record request history")
+	}
+}
+
+func nonNilParams(params map[string]string) map[string]string {
+	if params == nil {
+		return map[string]string{}
+	}
+	return params
+}
+
+func headersMap(h map[string][]string) http.Header {
+	if h == nil {
+		return http.Header{}
+	}
+	return http.Header(h)
+}
