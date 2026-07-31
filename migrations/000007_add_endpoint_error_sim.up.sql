@@ -1,0 +1,1 @@
+ALTER TABLE endpoints ADD COLUMN IF NOT EXISTS error_sim text NOT NULL DEFAULT '';

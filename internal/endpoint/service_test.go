@@ -615,6 +615,284 @@ func TestServiceUpdateKeepsSchemaWhenPromptUnchanged(t *testing.T) {
 	}
 }
 
+func TestServiceCreateSnapshotsFullState(t *testing.T) {
+	repo := newFakeRepo()
+	svc := newServiceWithRepo(repo)
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method:        "POST",
+		Path:          "/widgets",
+		Description:   "Creates a widget.",
+		Prompt:        "return the created widget",
+		ResponseType:  "json",
+		Stateful:      true,
+		Status:        models.StatusInactive,
+		RequestSchema: `{"type":"object"}`,
+		ErrorSim:      `{"status":503}`,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	versions, err := svc.ListVersions(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("ListVersions failed: %v", err)
+	}
+	if len(versions) != 1 {
+		t.Fatalf("expected a single version 1, got %d", len(versions))
+	}
+	v := versions[0]
+	if v.Method != "POST" || v.Path != "/widgets" {
+		t.Errorf("snapshot method/path not captured: %+v", v)
+	}
+	if v.Description != "Creates a widget." {
+		t.Errorf("snapshot description not captured: %q", v.Description)
+	}
+	if v.Prompt != e.Prompt || v.ResponseType != models.ResponseTypeJSON {
+		t.Errorf("snapshot prompt/response_type not captured: %+v", v)
+	}
+	if !v.Stateful {
+		t.Errorf("snapshot stateful not captured")
+	}
+	if v.Status != models.StatusInactive {
+		t.Errorf("snapshot status not captured: %q", v.Status)
+	}
+	if v.RequestSchema != `{"type":"object"}` {
+		t.Errorf("snapshot request_schema not captured: %q", v.RequestSchema)
+	}
+	if v.ErrorSim != `{"status":503}` {
+		t.Errorf("snapshot error_sim not captured: %q", v.ErrorSim)
+	}
+}
+
+func TestServiceUpdateCreatesVersionForNonPromptChange(t *testing.T) {
+	a := &fakeAI{schemas: []*ai.Schema{schemaOfType("object")}}
+	svc := newServiceWithAI(newFakeRepo(), a)
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method:      "GET",
+		Path:        "/users",
+		Description: "old",
+		Prompt:      "return a user",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method:      "GET",
+		Path:        "/users",
+		Description: "new",
+		Prompt:      "return a user",
+	}); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	versions, err := svc.ListVersions(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("ListVersions failed: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("expected 2 versions after a non-prompt change, got %d", len(versions))
+	}
+	if versions[0].Version != 2 || versions[0].Description != "new" {
+		t.Errorf("version 2 should snapshot the new description, got %+v", versions[0])
+	}
+	if versions[1].Version != 1 || versions[1].Description != "old" {
+		t.Errorf("version 1 should keep the old description, got %+v", versions[1])
+	}
+	if versions[0].Schema != `{"type":"object"}` {
+		t.Errorf("schema should carry over when prompt is unchanged, got %q", versions[0].Schema)
+	}
+	if a.calls != 1 {
+		t.Errorf("expected no schema regeneration, got %d calls", a.calls)
+	}
+}
+
+func TestServiceRollbackRestoresEndpointState(t *testing.T) {
+	a := &fakeAI{schemas: []*ai.Schema{schemaOfType("object"), schemaOfType("array")}}
+	svc := newServiceWithAI(newFakeRepo(), a)
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return a user",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return users",
+	}); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	rolled, err := svc.Rollback(context.Background(), e.ID, 1)
+	if err != nil {
+		t.Fatalf("Rollback failed: %v", err)
+	}
+	if rolled.Prompt != "return a user" {
+		t.Errorf("expected prompt restored to v1, got %q", rolled.Prompt)
+	}
+
+	versions, err := svc.ListVersions(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("ListVersions failed: %v", err)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("expected 3 versions after rollback, got %d", len(versions))
+	}
+	if versions[0].Version != 3 {
+		t.Errorf("rollback should record version 3, got %d", versions[0].Version)
+	}
+	if versions[0].Prompt != "return a user" {
+		t.Errorf("version 3 should snapshot the restored prompt, got %q", versions[0].Prompt)
+	}
+	if versions[0].Schema != `{"type":"object"}` {
+		t.Errorf("version 3 should restore v1's schema, got %q", versions[0].Schema)
+	}
+}
+
+func TestServiceRollbackRejectsUnknownVersion(t *testing.T) {
+	svc := newTestService()
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return a user",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = svc.Rollback(context.Background(), e.ID, 99)
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %v", err)
+	}
+}
+
+func TestServiceRollbackRejectsLatestVersion(t *testing.T) {
+	svc := newServiceWithRepo(newFakeRepo())
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return a user",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return users",
+	}); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	_, err = svc.Rollback(context.Background(), e.ID, 2)
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError for latest version, got %v", err)
+	}
+}
+
+func TestServiceRollbackNotFound(t *testing.T) {
+	svc := newTestService()
+
+	_, err := svc.Rollback(context.Background(), uuid.New(), 1)
+	if !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestServiceDiffListsChanges(t *testing.T) {
+	svc := newServiceWithRepo(newFakeRepo())
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "a",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method:      "GET",
+		Path:        "/users",
+		Description: "new desc",
+		Prompt:      "b",
+	}); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	changes, err := svc.Diff(context.Background(), e.ID, 1)
+	if err != nil {
+		t.Fatalf("Diff failed: %v", err)
+	}
+	byField := make(map[string]FieldChange, len(changes))
+	for _, c := range changes {
+		byField[c.Field] = c
+	}
+	if c, ok := byField["prompt"]; !ok || c.From != "a" || c.To != "b" {
+		t.Errorf("expected prompt a->b change, got %v", byField["prompt"])
+	}
+	if c, ok := byField["description"]; !ok || c.From != "" || c.To != "new desc" {
+		t.Errorf("expected description change, got %v", byField["description"])
+	}
+}
+
+func TestServiceDiffLatestIsEmpty(t *testing.T) {
+	svc := newServiceWithRepo(newFakeRepo())
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return a user",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return users",
+	}); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	changes, err := svc.Diff(context.Background(), e.ID, 2)
+	if err != nil {
+		t.Fatalf("Diff failed: %v", err)
+	}
+	if len(changes) != 0 {
+		t.Errorf("expected empty diff against latest, got %v", changes)
+	}
+}
+
+func TestServiceDiffUnknownVersion(t *testing.T) {
+	svc := newTestService()
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return a user",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	_, err = svc.Diff(context.Background(), e.ID, 5)
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %v", err)
+	}
+}
+
 func TestServiceImportCreatesEndpoints(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newServiceWithRepo(repo)
@@ -858,5 +1136,147 @@ func TestServiceImportDropsInvalidRequestSchema(t *testing.T) {
 	}
 	if res.Endpoints[0].RequestSchema != "" {
 		t.Errorf("expected empty stored request schema for invalid import, got %q", res.Endpoints[0].RequestSchema)
+	}
+}
+
+func TestServiceCreateStoresErrorSim(t *testing.T) {
+	svc := newTestService()
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method:   "GET",
+		Path:     "/boom",
+		Prompt:   "boom",
+		ErrorSim: `{"status":503,"failure_rate":50}`,
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	sim, err := models.UnmarshalErrorSim(e.ErrorSim)
+	if err != nil {
+		t.Fatalf("stored error_sim should parse: %v", err)
+	}
+	if sim.Status != 503 || sim.FailureRate != 50 {
+		t.Errorf("unexpected stored sim: %+v", sim)
+	}
+}
+
+func TestServiceCreateRejectsInvalidErrorSim(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"bad json", `{not json`},
+		{"bad status low", `{"status":200}`},
+		{"bad status high", `{"status":600}`},
+		{"bad failure rate", `{"status":500,"failure_rate":150}`},
+		{"negative latency", `{"latency_ms":-5}`},
+		{"negative timeout", `{"timeout_ms":-1}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestService()
+			_, err := svc.Create(context.Background(), CreateEndpointParams{
+				Method:   "GET",
+				Path:     "/boom",
+				Prompt:   "boom",
+				ErrorSim: tc.value,
+			})
+			if err == nil {
+				t.Fatalf("expected error for error_sim %q", tc.value)
+			}
+			var validationErr *ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("expected ValidationError, got %T: %v", err, err)
+			}
+			if validationErr.Field != "error_sim" {
+				t.Errorf("expected field error_sim, got %q", validationErr.Field)
+			}
+		})
+	}
+}
+
+func TestServiceCreateAcceptsValidErrorSimEdges(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+	}{
+		{"empty", ""},
+		{"zero config", `{}`},
+		{"status zero", `{"status":0}`},
+		{"status floor", `{"status":400}`},
+		{"status ceiling", `{"status":599}`},
+		{"rate bounds", `{"status":500,"failure_rate":100}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestService()
+			if _, err := svc.Create(context.Background(), CreateEndpointParams{
+				Method:   "GET",
+				Path:     "/boom",
+				Prompt:   "boom",
+				ErrorSim: tc.value,
+			}); err != nil {
+				t.Fatalf("expected %q to be accepted, got %v", tc.value, err)
+			}
+		})
+	}
+}
+
+func TestServiceUpdateErrorSimSetClearKeep(t *testing.T) {
+	svc := newTestService()
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/boom",
+		Prompt: "boom",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	set := `{"status":429}`
+	updated, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method:   "GET",
+		Path:     "/boom",
+		Prompt:   "boom",
+		ErrorSim: &set,
+	})
+	if err != nil {
+		t.Fatalf("Update set failed: %v", err)
+	}
+	if updated.ErrorSim != set {
+		t.Errorf("expected error_sim set, got %q", updated.ErrorSim)
+	}
+
+	clear := ""
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method:   "GET",
+		Path:     "/boom",
+		Prompt:   "boom",
+		ErrorSim: &clear,
+	}); err != nil {
+		t.Fatalf("Update clear failed: %v", err)
+	}
+	got, err := svc.Get(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got.ErrorSim != "" {
+		t.Errorf("expected cleared error_sim, got %q", got.ErrorSim)
+	}
+
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method: "GET",
+		Path:   "/boom",
+		Prompt: "boom",
+	}); err != nil {
+		t.Fatalf("Update without error_sim failed: %v", err)
+	}
+	got, err = svc.Get(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got.ErrorSim != "" {
+		t.Errorf("expected error_sim kept empty, got %q", got.ErrorSim)
 	}
 }

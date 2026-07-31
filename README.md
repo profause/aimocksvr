@@ -70,6 +70,8 @@ Failure:
 | PUT    | /api/v1/endpoints/:id         | Replace endpoint           |
 | DELETE | /api/v1/endpoints/:id         | Delete endpoint            |
 | GET    | /api/v1/endpoints/:id/versions| List endpoint versions     |
+| GET    | /api/v1/endpoints/:id/versions/:version/diff| Diff a version vs the latest |
+| POST   | /api/v1/endpoints/:id/versions/:version/rollback| Roll back to a version |
 | GET    | /api/v1/endpoints/:id/history | List request history       |
 | POST   | /api/v1/imports/openapi       | Import an OpenAPI document  |
 | POST   | /api/v1/imports/postman       | Import a Postman collection |
@@ -82,11 +84,34 @@ curl -X POST http://localhost:8080/api/v1/endpoints \
   -d '{"method":"post","path":"/users","prompt":"create a user and return it"}'
 ```
 
-Creating or updating an endpoint always records a new `EndpointVersion`
-(version 1 on create, then a bump whenever the prompt changes). Create accepts
-`request_schema` (a JSON Schema string for the request body); update accepts it
-as an optional string, where `""` clears the schema and omitting it keeps the
-current one.
+Creating or updating an endpoint always records a new `EndpointVersion`:
+version 1 on create, then a bump for every modification (a PUT that changes
+nothing is skipped). Each version is a full snapshot of the endpoint — method,
+path, description, prompt, response type, stateful, status, `request_schema`,
+`error_sim` and the response schema. Create accepts `request_schema` (a JSON
+Schema string for the request body) and `error_sim` (a JSON config string for
+failure simulation); update accepts both as optional strings, where `""` clears
+the value and omitting it keeps the current one.
+
+Every endpoint keeps its version history:
+
+```sh
+# List all snapshots (newest first)
+curl http://localhost:8080/api/v1/endpoints/<id>/versions
+
+# Diff an older version against the current one
+curl http://localhost:8080/api/v1/endpoints/<id>/versions/1/diff
+# => {"success":true,"data":{"version":1,"changes":[{"field":"path","from":"/v1","to":"/v2"}, ...]}}
+
+# Roll the endpoint back to an earlier version (records a new version)
+curl -X POST http://localhost:8080/api/v1/endpoints/<id>/versions/1/rollback
+```
+
+The rollback itself becomes a new version, so it can be inspected or undone.
+Rolling back to the latest version or to a version that does not exist is
+rejected with `VALIDATION_ERROR`. Because the response schema is derived from
+the prompt, it is regenerated only when the prompt changes; rolling back
+restores the schema captured in the target version.
 
 ## Dynamic routing
 
@@ -240,6 +265,36 @@ endpoint:
   preferring the first 2xx example with a JSON body. With AI disabled, the
   faker generator immediately serves schema-conforming data.
 - Re-importing is idempotent, same as OpenAPI.
+
+## Error simulation
+
+Any endpoint can simulate failure modes by setting `error_sim` to a JSON
+config string on create/update (`""` clears it, omitting it on update keeps the
+current value):
+
+```sh
+curl -X POST http://localhost:8080/api/v1/endpoints \
+  -H 'Content-Type: application/json' \
+  -d '{"method":"get","path":"/payments","prompt":"charge a card",
+       "error_sim":"{\"status\":500,\"failure_rate\":30}"}'
+```
+
+Supported fields:
+
+| Field            | Effect                                                              |
+| ---------------- | ------------------------------------------------------------------- |
+| `latency_ms`     | Artificial delay applied to **every** request (not rate-gated).     |
+| `timeout_ms`     | Hold the connection, then drop it without a response (timeout).     |
+| `drop_connection`| Close the connection immediately without a response.                |
+| `malformed_json` | Respond `200` with a body that is not valid JSON.                   |
+| `status`         | Respond with this status (`400`-`599`) and the `ERROR_SIMULATION` envelope. |
+| `failure_rate`   | 0-100. `0` (default) or `100` means the configured failure always applies; otherwise it triggers in that percentage of requests. |
+
+`latency_ms` always applies. The failure behaviors are rolled against
+`failure_rate`; when several are configured, `timeout_ms` >
+`drop_connection` > `malformed_json` > `status` wins. Invalid configs are
+rejected with `400` on create/update; a corrupted stored config is ignored and
+the endpoint serves normally.
 
 ## Architecture
 

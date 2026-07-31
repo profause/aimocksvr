@@ -33,6 +33,8 @@ func (h *Handler) Register(r fiber.Router) {
 	group.Put("/:id", h.Update)
 	group.Delete("/:id", h.Delete)
 	group.Get("/:id/versions", h.ListVersions)
+	group.Get("/:id/versions/:version/diff", h.DiffVersion)
+	group.Post("/:id/versions/:version/rollback", h.Rollback)
 	group.Get("/:id/history", h.ListHistory)
 }
 
@@ -124,6 +126,40 @@ func (h *Handler) ListVersions(c fiber.Ctx) error {
 	return api.OK(c, map[string]any{"versions": versions})
 }
 
+func (h *Handler) DiffVersion(c fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidID, "invalid endpoint id")
+	}
+	version, err := parseVersion(c.Params("version"))
+	if err != nil {
+		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, "invalid version")
+	}
+
+	changes, err := h.svc.Diff(c.Context(), id, version)
+	if err != nil {
+		return h.fail(c, err)
+	}
+	return api.OK(c, map[string]any{"version": version, "changes": changes})
+}
+
+func (h *Handler) Rollback(c fiber.Ctx) error {
+	id, err := parseID(c.Params("id"))
+	if err != nil {
+		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidID, "invalid endpoint id")
+	}
+	version, err := parseVersion(c.Params("version"))
+	if err != nil {
+		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, "invalid version")
+	}
+
+	e, err := h.svc.Rollback(c.Context(), id, version)
+	if err != nil {
+		return h.fail(c, err)
+	}
+	return api.OK(c, e)
+}
+
 func (h *Handler) ListHistory(c fiber.Ctx) error {
 	id, err := parseID(c.Params("id"))
 	if err != nil {
@@ -156,6 +192,11 @@ func (h *Handler) fail(c fiber.Ctx, err error) error {
 
 func parseID(raw string) (uuid.UUID, error) {
 	return uuid.Parse(raw)
+}
+
+// parseVersion parses an integer version number from a route parameter.
+func parseVersion(raw string) (int, error) {
+	return strconv.Atoi(raw)
 }
 
 // queryInt parses an optional integer query parameter, returning 0 when it is

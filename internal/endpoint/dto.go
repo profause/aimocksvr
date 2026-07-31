@@ -11,6 +11,7 @@ type CreateEndpointParams struct {
 	Stateful      bool   `json:"stateful"`
 	Status        string `json:"status"`
 	RequestSchema string `json:"request_schema"`
+	ErrorSim      string `json:"error_sim"`
 }
 
 // UpdateEndpointParams is the input for replacing an endpoint. PUT semantics:
@@ -25,6 +26,7 @@ type UpdateEndpointParams struct {
 	Stateful      *bool   `json:"stateful"`
 	Status        string  `json:"status"`
 	RequestSchema *string `json:"request_schema"`
+	ErrorSim      *string `json:"error_sim"`
 }
 
 // ListParams controls pagination of List responses.

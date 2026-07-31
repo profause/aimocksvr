@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,14 @@ type ImportResult struct {
 	Endpoints []models.Endpoint `json:"endpoints"`
 }
 
+// FieldChange describes a single versioned field that differs between two
+// snapshots. From is the earlier snapshot's value and To the later one's.
+type FieldChange struct {
+	Field string `json:"field"`
+	From  string `json:"from"`
+	To    string `json:"to"`
+}
+
 // Service contains the business logic of the endpoint registry.
 type Service interface {
 	Create(ctx context.Context, in CreateEndpointParams) (*models.Endpoint, error)
@@ -66,6 +75,8 @@ type Service interface {
 	ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error)
 	ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error)
 	Import(ctx context.Context, items []ImportItem) (ImportResult, error)
+	Rollback(ctx context.Context, id uuid.UUID, version int) (*models.Endpoint, error)
+	Diff(ctx context.Context, id uuid.UUID, version int) ([]FieldChange, error)
 }
 
 type service struct {
@@ -101,6 +112,7 @@ func (s *service) Create(ctx context.Context, in CreateEndpointParams) (*models.
 		Stateful:      in.Stateful,
 		Status:        defaultString(in.Status, models.StatusActive),
 		RequestSchema: strings.TrimSpace(in.RequestSchema),
+		ErrorSim:      strings.TrimSpace(in.ErrorSim),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -111,14 +123,7 @@ func (s *service) Create(ctx context.Context, in CreateEndpointParams) (*models.
 		if err := s.repo.Create(ctx, e); err != nil {
 			return err
 		}
-		v := &models.EndpointVersion{
-			ID:         uuid.New(),
-			EndpointID: e.ID,
-			Prompt:     e.Prompt,
-			Schema:     schema,
-			Version:    1,
-		}
-		return s.repo.CreateVersion(ctx, v)
+		return s.repo.CreateVersion(ctx, snapshotVersion(e, schema, 1))
 	})
 	if err != nil {
 		return nil, err
@@ -138,9 +143,10 @@ func (s *service) Update(ctx context.Context, id uuid.UUID, in UpdateEndpointPar
 		return nil, err
 	}
 
+	oldMethod := existing.Method
 	oldPrompt := existing.Prompt
 
-	oldMethod := existing.Method
+	before := *existing
 
 	existing.Method = strings.ToUpper(in.Method)
 	existing.Path = in.Path
@@ -154,34 +160,36 @@ func (s *service) Update(ctx context.Context, id uuid.UUID, in UpdateEndpointPar
 	if in.RequestSchema != nil {
 		existing.RequestSchema = strings.TrimSpace(*in.RequestSchema)
 	}
+	if in.ErrorSim != nil {
+		existing.ErrorSim = strings.TrimSpace(*in.ErrorSim)
+	}
+
+	// Every modification produces a new version. A PUT that changes nothing is
+	// not a modification, so it is skipped to keep the history meaningful.
+	if endpointSnapshotEqual(&before, existing) {
+		return existing, nil
+	}
 	existing.UpdatedAt = time.Now().UTC()
 
-	createdVersion := in.Prompt != oldPrompt
+	versions, err := s.repo.ListVersions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
 
+	// The response schema is regenerated only when the prompt changes, since
+	// it is derived from the prompt; otherwise the previous schema carries over.
 	var schema string
-	if createdVersion {
+	if in.Prompt != oldPrompt {
 		schema = s.generateSchema(ctx, existing)
+	} else if len(versions) > 0 {
+		schema = versions[0].Schema
 	}
 
 	err = s.repo.WithTx(ctx, func(ctx context.Context) error {
 		if err := s.repo.Update(ctx, existing); err != nil {
 			return err
 		}
-		if createdVersion {
-			versions, err := s.repo.ListVersions(ctx, id)
-			if err != nil {
-				return err
-			}
-			v := &models.EndpointVersion{
-				ID:         uuid.New(),
-				EndpointID: id,
-				Prompt:     in.Prompt,
-				Schema:     schema,
-				Version:    nextVersion(versions),
-			}
-			return s.repo.CreateVersion(ctx, v)
-		}
-		return nil
+		return s.repo.CreateVersion(ctx, snapshotVersion(existing, schema, nextVersion(versions)))
 	})
 	if err != nil {
 		return nil, err
@@ -190,6 +198,75 @@ func (s *service) Update(ctx context.Context, id uuid.UUID, in UpdateEndpointPar
 	s.invalidateMethod(oldMethod)
 	s.invalidateMethod(existing.Method)
 	return existing, nil
+}
+
+// Rollback restores an endpoint to the state captured by a historical version
+// and records the rollback as a new version, so the rollback itself stays in
+// the history and can be reverted. Rolling back to the current latest version
+// is rejected as a no-op.
+func (s *service) Rollback(ctx context.Context, id uuid.UUID, version int) (*models.Endpoint, error) {
+	existing, err := s.repo.FindByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+
+	versions, err := s.repo.ListVersions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	target, err := findVersion(versions, version)
+	if err != nil {
+		return nil, err
+	}
+	if target.Version >= versions[0].Version {
+		return nil, &ValidationError{Field: "version", Message: fmt.Sprintf("version %d is already the latest, nothing to roll back", version)}
+	}
+
+	oldMethod := existing.Method
+
+	existing.Method = target.Method
+	existing.Path = target.Path
+	existing.Description = target.Description
+	existing.Prompt = target.Prompt
+	existing.ResponseType = defaultString(target.ResponseType, models.ResponseTypeJSON)
+	existing.Stateful = target.Stateful
+	existing.Status = defaultString(target.Status, models.StatusActive)
+	existing.RequestSchema = target.RequestSchema
+	existing.ErrorSim = target.ErrorSim
+	existing.UpdatedAt = time.Now().UTC()
+
+	err = s.repo.WithTx(ctx, func(ctx context.Context) error {
+		if err := s.repo.Update(ctx, existing); err != nil {
+			return err
+		}
+		return s.repo.CreateVersion(ctx, snapshotVersion(existing, target.Schema, nextVersion(versions)))
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	s.invalidateMethod(oldMethod)
+	s.invalidateMethod(existing.Method)
+	return existing, nil
+}
+
+// Diff compares the version snapshot with the endpoint's latest version and
+// reports which versioned fields changed and how. An empty result means the
+// two snapshots are identical.
+func (s *service) Diff(ctx context.Context, id uuid.UUID, version int) ([]FieldChange, error) {
+	if _, err := s.repo.FindByID(ctx, id); err != nil {
+		return nil, err
+	}
+
+	versions, err := s.repo.ListVersions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	target, err := findVersion(versions, version)
+	if err != nil {
+		return nil, err
+	}
+	return diffVersions(target, &versions[0]), nil
 }
 
 func (s *service) Delete(ctx context.Context, id uuid.UUID) error {
@@ -276,14 +353,7 @@ func (s *service) Import(ctx context.Context, items []ImportItem) (ImportResult,
 				return err
 			}
 
-			v := &models.EndpointVersion{
-				ID:         uuid.New(),
-				EndpointID: e.ID,
-				Prompt:     e.Prompt,
-				Schema:     schema,
-				Version:    1,
-			}
-			if err := s.repo.CreateVersion(ctx, v); err != nil {
+			if err := s.repo.CreateVersion(ctx, snapshotVersion(e, schema, 1)); err != nil {
 				return err
 			}
 			result.Created++
@@ -312,6 +382,9 @@ func (s *service) validateCreate(in CreateEndpointParams) error {
 	if err := s.validateRequestSchema(in.RequestSchema); err != nil {
 		return err
 	}
+	if err := validateErrorSim(in.ErrorSim); err != nil {
+		return err
+	}
 	return validateOptionalFields(in.ResponseType, in.Status)
 }
 
@@ -321,6 +394,11 @@ func (s *service) validateUpdate(in UpdateEndpointParams) error {
 	}
 	if in.RequestSchema != nil {
 		if err := s.validateRequestSchema(*in.RequestSchema); err != nil {
+			return err
+		}
+	}
+	if in.ErrorSim != nil {
+		if err := validateErrorSim(*in.ErrorSim); err != nil {
 			return err
 		}
 	}
@@ -336,6 +414,32 @@ func (s *service) validateRequestSchema(schema string) error {
 	}
 	if err := s.validate.ValidateSchema([]byte(schema)); err != nil {
 		return &ValidationError{Field: "request_schema", Message: fmt.Sprintf("invalid json schema: %v", err)}
+	}
+	return nil
+}
+
+// validateErrorSim rejects error simulation configs that are not valid JSON or
+// fall outside the supported ranges. An empty config is always accepted.
+func validateErrorSim(config string) error {
+	text := strings.TrimSpace(config)
+	if text == "" {
+		return nil
+	}
+	sim, err := models.UnmarshalErrorSim(text)
+	if err != nil {
+		return &ValidationError{Field: "error_sim", Message: fmt.Sprintf("invalid json: %v", err)}
+	}
+	if sim.Status < 0 || sim.Status != 0 && (sim.Status < 400 || sim.Status > 599) {
+		return &ValidationError{Field: "error_sim", Message: fmt.Sprintf("unsupported status %d (want 0 or 400-599)", sim.Status)}
+	}
+	if sim.FailureRate < 0 || sim.FailureRate > 100 {
+		return &ValidationError{Field: "error_sim", Message: fmt.Sprintf("failure_rate must be between 0 and 100, got %d", sim.FailureRate)}
+	}
+	if sim.LatencyMs < 0 {
+		return &ValidationError{Field: "error_sim", Message: "latency_ms cannot be negative"}
+	}
+	if sim.TimeoutMs < 0 {
+		return &ValidationError{Field: "error_sim", Message: "timeout_ms cannot be negative"}
 	}
 	return nil
 }
@@ -425,6 +529,78 @@ func nextVersion(versions []models.EndpointVersion) int {
 		}
 	}
 	return highest + 1
+}
+
+// snapshotVersion captures the full state of an endpoint at a point in time.
+// The response schema is stored separately because it is derived from the
+// prompt, not persisted on the endpoint itself.
+func snapshotVersion(e *models.Endpoint, schema string, version int) *models.EndpointVersion {
+	return &models.EndpointVersion{
+		ID:            uuid.New(),
+		EndpointID:    e.ID,
+		Method:        e.Method,
+		Path:          e.Path,
+		Description:   e.Description,
+		Prompt:        e.Prompt,
+		ResponseType:  e.ResponseType,
+		Stateful:      e.Stateful,
+		Status:        e.Status,
+		RequestSchema: e.RequestSchema,
+		ErrorSim:      e.ErrorSim,
+		Schema:        schema,
+		Version:       version,
+	}
+}
+
+// endpointSnapshotEqual reports whether two endpoints carry identical versioned
+// state. The identity, timestamps and stored schema are excluded.
+func endpointSnapshotEqual(a, b *models.Endpoint) bool {
+	return a.Method == b.Method &&
+		a.Path == b.Path &&
+		a.Description == b.Description &&
+		a.Prompt == b.Prompt &&
+		a.ResponseType == b.ResponseType &&
+		a.Stateful == b.Stateful &&
+		a.Status == b.Status &&
+		a.RequestSchema == b.RequestSchema &&
+		a.ErrorSim == b.ErrorSim
+}
+
+// findVersion returns the snapshot with the requested version number.
+func findVersion(versions []models.EndpointVersion, version int) (*models.EndpointVersion, error) {
+	for i := range versions {
+		if versions[i].Version == version {
+			return &versions[i], nil
+		}
+	}
+	return nil, &ValidationError{Field: "version", Message: fmt.Sprintf("version %d not found", version)}
+}
+
+// diffVersions compares the earlier snapshot (from) with the later one (to)
+// and lists every versioned field that differs.
+func diffVersions(from, to *models.EndpointVersion) []FieldChange {
+	fields := []struct {
+		name string
+		a, b string
+	}{
+		{"method", from.Method, to.Method},
+		{"path", from.Path, to.Path},
+		{"description", from.Description, to.Description},
+		{"prompt", from.Prompt, to.Prompt},
+		{"response_type", from.ResponseType, to.ResponseType},
+		{"stateful", strconv.FormatBool(from.Stateful), strconv.FormatBool(to.Stateful)},
+		{"status", from.Status, to.Status},
+		{"request_schema", from.RequestSchema, to.RequestSchema},
+		{"error_sim", from.ErrorSim, to.ErrorSim},
+		{"schema", from.Schema, to.Schema},
+	}
+	var changes []FieldChange
+	for _, f := range fields {
+		if f.a != f.b {
+			changes = append(changes, FieldChange{Field: f.name, From: f.a, To: f.b})
+		}
+	}
+	return changes
 }
 
 func normalizePagination(p *ListParams) {

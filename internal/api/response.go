@@ -13,6 +13,7 @@ const (
 	CodeNotFound        = "NOT_FOUND"
 	CodeConflict        = "CONFLICT"
 	CodeInternalError   = "INTERNAL_ERROR"
+	CodeErrorSimulation = "ERROR_SIMULATION"
 )
 
 // Response is the envelope for successful responses.

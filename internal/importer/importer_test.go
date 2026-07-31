@@ -51,6 +51,14 @@ func (f *fakeEndpointService) ListHistory(context.Context, uuid.UUID) ([]models.
 	return nil, nil
 }
 
+func (f *fakeEndpointService) Rollback(context.Context, uuid.UUID, int) (*models.Endpoint, error) {
+	return nil, nil
+}
+
+func (f *fakeEndpointService) Diff(context.Context, uuid.UUID, int) ([]endpoint.FieldChange, error) {
+	return nil, nil
+}
+
 func newTestService(f *fakeEndpointService) *Service {
 	logger := zerolog.Nop()
 	return NewService(f, &logger)

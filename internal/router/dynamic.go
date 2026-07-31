@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -67,6 +69,22 @@ func (h *DynamicHandler) Serve(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, err.Error())
 	}
 
+	// Endpoints may declare error simulation. Latency always applies; the
+	// configured failure is rolled against failure_rate and short-circuits
+	// generation when it triggers.
+	sim, err := models.UnmarshalErrorSim(e.ErrorSim)
+	if err != nil {
+		h.logger.Warn().Err(err).Str("endpoint_id", e.ID.String()).Msg("invalid error_sim config, ignoring")
+	}
+	if sim != nil {
+		if sim.LatencyMs > 0 {
+			time.Sleep(time.Duration(sim.LatencyMs) * time.Millisecond)
+		}
+		if sim.ShouldFail(rand.Intn(100)) {
+			return applyFailure(c, sim)
+		}
+	}
+
 	req := &generator.Request{
 		Endpoint:   e,
 		PathParams: nonNilParams(params),
@@ -102,6 +120,34 @@ func validateRequestBody(v validator.Validator, e *models.Endpoint, body []byte)
 	if err := v.ValidateRequest([]byte(e.RequestSchema), body); err != nil {
 		return fmt.Errorf("request body does not match the endpoint request schema: %w", err)
 	}
+	return nil
+}
+
+// applyFailure performs the endpoint's simulated failure. Precedence: timeout
+// (sleep, then drop the connection), dropped connection, malformed JSON, and
+// finally the configured status.
+func applyFailure(c fiber.Ctx, sim *models.ErrorSimulation) error {
+	switch {
+	case sim.TimeoutMs > 0:
+		time.Sleep(time.Duration(sim.TimeoutMs) * time.Millisecond)
+		return dropConnection(c)
+	case sim.DropConnection:
+		return dropConnection(c)
+	case sim.MalformedJSON:
+		c.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
+		c.Status(fiber.StatusOK)
+		return c.Send([]byte(`{"error": "simulated malformed response"`))
+	default:
+		return api.Fail(c, sim.Status, api.CodeErrorSimulation, "simulated endpoint failure")
+	}
+}
+
+// dropConnection aborts the response and closes the connection without sending
+// a reply, so the client observes an empty/truncated response.
+func dropConnection(c fiber.Ctx) error {
+	ctx := c.RequestCtx()
+	ctx.HijackSetNoResponse(true)
+	ctx.Hijack(func(conn net.Conn) { _ = conn.Close() })
 	return nil
 }
 
