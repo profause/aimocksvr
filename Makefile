@@ -1,4 +1,5 @@
-.PHONY: build run test vet fmt lint db-up db-down migrate-check
+.PHONY: build run test vet fmt lint db-up db-down migrate-check \
+        web-dev web-build web-lint web-typecheck web-format
 
 build:
 	go build ./...
@@ -23,3 +24,18 @@ db-up:
 
 db-down:
 	docker compose down
+
+web-dev:
+	cd web && npm run dev
+
+web-build:
+	cd web && npm run build
+
+web-lint:
+	cd web && npm run lint
+
+web-typecheck:
+	cd web && npm run typecheck
+
+web-format:
+	cd web && npm run format

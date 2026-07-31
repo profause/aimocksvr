@@ -4,3 +4,8 @@ bin/
 .DS_Store
 configs/config.yaml
 config.yaml
+
+# Frontend
+web/node_modules/
+web/dist/
+internal/web/dist/

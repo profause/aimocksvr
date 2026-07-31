@@ -28,6 +28,7 @@ type Config struct {
 	Cache    Cache    `mapstructure:"cache"`
 	AI       AI       `mapstructure:"ai"`
 	Auth     Auth     `mapstructure:"auth"`
+	Dashboard Dashboard `mapstructure:"dashboard"`
 	Log      Log      `mapstructure:"log"`
 }
 
@@ -86,6 +87,11 @@ type Auth struct {
 	WorkspaceTokens string `mapstructure:"workspace_tokens"`
 }
 
+// Dashboard controls whether the embedded React frontend is served.
+type Dashboard struct {
+	Enabled bool `mapstructure:"enabled"`
+}
+
 // Load reads configuration from .env, configs/config.yaml and environment
 // variables and returns the resolved configuration.
 func Load() (*Config, error) {
@@ -140,6 +146,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("auth.jwt_ttl", "1h")
 	v.SetDefault("auth.api_keys", "")
 	v.SetDefault("auth.workspace_tokens", "")
+	v.SetDefault("dashboard.enabled", false)
 	v.SetDefault("log.level", "info")
 }
 

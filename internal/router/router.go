@@ -13,6 +13,7 @@ import (
 	"github.com/profause/aimocksvr/internal/endpoint"
 	"github.com/profause/aimocksvr/internal/importer"
 	"github.com/profause/aimocksvr/internal/middleware"
+	"github.com/profause/aimocksvr/internal/web"
 )
 
 // New builds and configures the Fiber application with all routes registered.
@@ -32,6 +33,10 @@ func New(cfg *config.Config, logger *zerolog.Logger, h *endpoint.Handler, imp *i
 
 	registerHealth(app)
 	registerDynamic(app, dyn)
+
+	if cfg.Dashboard.Enabled {
+		web.Register(app)
+	}
 
 	return app
 }
