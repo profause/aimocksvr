@@ -72,6 +72,7 @@ Failure:
 | GET    | /api/v1/endpoints/:id/versions| List endpoint versions     |
 | GET    | /api/v1/endpoints/:id/history | List request history       |
 | POST   | /api/v1/imports/openapi       | Import an OpenAPI document  |
+| POST   | /api/v1/imports/postman       | Import a Postman collection |
 
 Example create:
 
@@ -209,6 +210,37 @@ Every operation becomes a registry endpoint:
 - Re-importing is idempotent: operations whose method + path already exist are
   reported as `skipped`, not recreated.
 
+## Postman import
+
+Existing Postman collections bootstrap the registry the same way.
+`POST /api/v1/imports/postman` accepts a **Collection v2.0/v2.1 JSON** document
+(raw body or multipart `file` field):
+
+```sh
+curl -X POST http://localhost:8080/api/v1/imports/postman \
+  -H 'Content-Type: application/json' \
+  --data @collection.postman_collection
+curl -X POST http://localhost:8080/api/v1/imports/postman -F file=@collection.json
+```
+
+Every request in the collection (folders walked recursively) becomes a mock
+endpoint:
+
+- **Methods and paths** come from `request.method` and `request.url`.
+  `url.path` (array or string) is used when present, otherwise the path is
+  extracted from `url.raw` (scheme and host stripped). Postman path templates
+  already use router syntax (`/users/:id`), and `{{variable}}` placeholders are
+  converted to `:param` — `{{baseUrl}}/users/{{id}}` → `/users/:id`.
+- **Prompts** combine the request name and description, so imported endpoints
+  generate richer responses.
+- **Requests**: when `request.body.mode` is `raw` and the body is JSON, a JSON
+  Schema is inferred from the sample and stored as `request_schema`, so the
+  endpoint validates incoming bodies (missing fields → `400`).
+- **Responses**: a JSON Schema is inferred from the saved example responses,
+  preferring the first 2xx example with a JSON body. With AI disabled, the
+  faker generator immediately serves schema-conforming data.
+- Re-importing is idempotent, same as OpenAPI.
+
 ## Architecture
 
 ```
@@ -227,7 +259,7 @@ Database       PostgreSQL
 - `internal/database` — Bun connection pool + golang-migrate runner
 - `internal/endpoint` — endpoint feature (dto, repository, service, handler)
 - `internal/generator` — mock response generation (AI pipeline, schema-driven faker, stateful storage, static fallback)
-- `internal/importer` — OpenAPI import (Swagger 2.0 + OpenAPI 3.x, JSON/YAML)
+- `internal/importer` — OpenAPI + Postman imports (Swagger 2.0/OpenAPI 3.x, Postman Collection v2)
 - `internal/middleware` — request logging
 - `internal/models` — shared domain models
 - `internal/router` — Fiber app assembly, routes, dynamic endpoint resolver

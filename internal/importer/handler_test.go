@@ -156,3 +156,67 @@ func TestHandlerImportReturnsEnvelopeOnSuccess(t *testing.T) {
 		t.Errorf("expected success envelope with data, got %+v", body)
 	}
 }
+
+func TestHandlerImportPostmanRawBody(t *testing.T) {
+	es := &fakeEndpointService{result: endpoint.ImportResult{Created: 1}}
+	app := newTestApp(es)
+
+	req := httptest.NewRequest("POST", "/imports/postman", bytes.NewReader([]byte(postmanCollection)))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	if len(es.items) != 3 {
+		t.Fatalf("expected 3 import items, got %d", len(es.items))
+	}
+}
+
+func TestHandlerImportPostmanMultipart(t *testing.T) {
+	es := &fakeEndpointService{result: endpoint.ImportResult{Created: 1}}
+	app := newTestApp(es)
+
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	fw, err := mw.CreateFormFile("file", "collection.postman_collection")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+	if _, err := fw.Write([]byte(postmanCollection)); err != nil {
+		t.Fatalf("write form file: %v", err)
+	}
+	mw.Close()
+
+	req := httptest.NewRequest("POST", "/imports/postman", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	if len(es.items) != 3 || es.items[0].Path != "/v2/users" {
+		t.Errorf("unexpected items: %+v", es.items)
+	}
+}
+
+func TestHandlerImportPostmanRejectsInvalidCollection(t *testing.T) {
+	app := newTestApp(&fakeEndpointService{})
+
+	req := httptest.NewRequest("POST", "/imports/postman", bytes.NewBufferString(`{"info":{"name":"T"}}`))
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}

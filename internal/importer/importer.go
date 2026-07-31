@@ -36,7 +36,22 @@ func (s *Service) Import(ctx context.Context, data []byte) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	return s.importSpecs(ctx, specs)
+}
 
+// ImportPostman parses data as a Postman Collection and registers every
+// request as an endpoint, reusing the same idempotent write path as Import.
+func (s *Service) ImportPostman(ctx context.Context, data []byte) (Result, error) {
+	specs, err := ParsePostman(data)
+	if err != nil {
+		return Result{}, err
+	}
+	return s.importSpecs(ctx, specs)
+}
+
+// importSpecs converts parsed endpoints into import items, writes them to the
+// registry and reports the outcome.
+func (s *Service) importSpecs(ctx context.Context, specs []EndpointSpec) (Result, error) {
 	items := make([]endpoint.ImportItem, 0, len(specs))
 	for _, spec := range specs {
 		items = append(items, endpoint.ImportItem{

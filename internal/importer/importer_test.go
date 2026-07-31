@@ -113,3 +113,29 @@ func TestServiceImportPropagatesEndpointError(t *testing.T) {
 		t.Fatalf("expected stored error, got %v", err)
 	}
 }
+
+func TestServiceImportPostman(t *testing.T) {
+	es := &fakeEndpointService{result: endpoint.ImportResult{Created: 2}}
+	svc := newTestService(es)
+
+	res, err := svc.ImportPostman(context.Background(), []byte(postmanCollection))
+	if err != nil {
+		t.Fatalf("ImportPostman returned error: %v", err)
+	}
+	if res.Parsed != 3 || res.Created != 2 {
+		t.Errorf("result = %+v, want parsed=3 created=2", res)
+	}
+	if len(es.items) != 3 {
+		t.Fatalf("expected 3 import items, got %d", len(es.items))
+	}
+	create := es.items[1]
+	if create.Method != "POST" || create.Path != "/v2/users" {
+		t.Errorf("second item = %s %s, want POST /v2/users", create.Method, create.Path)
+	}
+	if create.RequestSchema == "" {
+		t.Errorf("POST item should carry an inferred request schema")
+	}
+	if create.Schema == "" {
+		t.Errorf("POST item should carry an inferred response schema")
+	}
+}

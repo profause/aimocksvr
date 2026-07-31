@@ -12,7 +12,7 @@ import (
 	"github.com/profause/aimocksvr/internal/api"
 )
 
-// Handler exposes the OpenAPI importer over HTTP.
+// Handler exposes the importers over HTTP.
 type Handler struct {
 	svc    *Service
 	logger *zerolog.Logger
@@ -26,6 +26,7 @@ func NewHandler(svc *Service, logger *zerolog.Logger) *Handler {
 // Register wires the import routes onto the given router group.
 func (h *Handler) Register(r fiber.Router) {
 	r.Post("/imports/openapi", h.ImportOpenAPI)
+	r.Post("/imports/postman", h.ImportPostman)
 }
 
 // ImportOpenAPI accepts an OpenAPI document as the request body (JSON or
@@ -49,8 +50,29 @@ func (h *Handler) ImportOpenAPI(c fiber.Ctx) error {
 	return api.Created(c, result)
 }
 
-// readDocument extracts the OpenAPI document bytes from the request, either
-// as a multipart "file" field or the raw body.
+// ImportPostman accepts a Postman Collection as the request body (JSON) or as
+// a multipart file upload in the "file" field, parses it and registers every
+// request as a mock endpoint.
+func (h *Handler) ImportPostman(c fiber.Ctx) error {
+	data, err := readDocument(c)
+	if err != nil {
+		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, err.Error())
+	}
+
+	result, err := h.svc.ImportPostman(c.Context(), data)
+	if err != nil {
+		var perr *ParseError
+		if errors.As(err, &perr) {
+			return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, perr.Message)
+		}
+		h.logger.Error().Err(err).Msg("postman import failed")
+		return api.Fail(c, fiber.StatusInternalServerError, api.CodeInternalError, "internal server error")
+	}
+	return api.Created(c, result)
+}
+
+// readDocument extracts the import document bytes from the request, either as
+// a multipart "file" field or the raw body.
 func readDocument(c fiber.Ctx) ([]byte, error) {
 	if ct := c.Get("Content-Type"); strings.HasPrefix(ct, "multipart/form-data") {
 		fh, err := c.FormFile("file")
@@ -67,7 +89,7 @@ func readDocument(c fiber.Ctx) ([]byte, error) {
 
 	data := c.Body()
 	if len(bytes.TrimSpace(data)) == 0 {
-		return nil, errors.New("an OpenAPI document body is required")
+		return nil, errors.New("an import document body is required")
 	}
 	return data, nil
 }

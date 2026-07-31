@@ -335,3 +335,160 @@ func TestImportOpenAPIRejectsInvalidSpec(t *testing.T) {
 		t.Fatalf("expected 400, got %d", resp.StatusCode)
 	}
 }
+
+const postmanImportCollection = `{
+  "info": {"name": "Catalog", "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"},
+  "item": [
+    {
+      "name": "Items",
+      "item": [
+        {
+          "name": "List items",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "https://catalog.example.com/api/items", "path": ["api", "items"]}
+          },
+          "response": [
+            {"name": "ok", "code": 200, "body": "[{\"id\": \"9f8b\", \"name\": \"chair\"}]"}
+          ]
+        },
+        {
+          "name": "Create item",
+          "request": {
+            "method": "POST",
+            "description": "adds an item to the catalog",
+            "url": {"raw": "https://catalog.example.com/api/items", "path": ["api", "items"]},
+            "body": {"mode": "raw", "raw": "{\"name\":\"chair\",\"price\":9.99}"}
+          },
+          "response": [
+            {"name": "created", "code": 201, "body": "{\"id\": \"9f8b\", \"name\": \"chair\", \"price\": 9.99}"}
+          ]
+        },
+        {
+          "name": "Get item",
+          "request": {
+            "method": "GET",
+            "url": {"raw": "https://catalog.example.com/api/items/{{id}}", "path": ["api", "items", ":id"]}
+          },
+          "response": [
+            {"name": "ok", "code": 200, "body": "{\"id\": \"9f8b\", \"name\": \"chair\", \"price\": 9.99}"}
+          ]
+        }
+      ]
+    }
+  ]
+}`
+
+func TestImportPostmanThenServe(t *testing.T) {
+	app := newImportApp(t)
+
+	req := httptest.NewRequest("POST", "/api/v1/imports/postman", bytes.NewReader([]byte(postmanImportCollection)))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("import request failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201, got %d (body %q)", resp.StatusCode, body)
+	}
+
+	var envelope struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Parsed  int `json:"parsed"`
+			Created int `json:"created"`
+			Skipped int `json:"skipped"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode import response: %v", err)
+	}
+	if !envelope.Success || envelope.Data.Parsed != 3 || envelope.Data.Created != 3 {
+		t.Fatalf("unexpected import result: %+v", envelope)
+	}
+
+	// GET the collection endpoint: the faker fills the inferred schema.
+	resp, err = app.Test(httptest.NewRequest("GET", "/api/items", nil))
+	if err != nil {
+		t.Fatalf("GET failed: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d (body %q)", resp.StatusCode, body)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(body, &items); err != nil {
+		t.Fatalf("expected JSON array body, got %q", body)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 faked item, got %d", len(items))
+	}
+	if name, _ := items[0]["name"].(string); name == "" {
+		t.Errorf("expected a faked name, got %v", items[0]["name"])
+	}
+
+	// Path params from {{var}}/":id" resolve.
+	resp, err = app.Test(httptest.NewRequest("GET", "/api/items/42", nil))
+	if err != nil {
+		t.Fatalf("GET by id failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for /api/items/42, got %d", resp.StatusCode)
+	}
+
+	// POST enforces the inferred request schema.
+	resp, err = app.Test(httptest.NewRequest("POST", "/api/items", bytes.NewBufferString(`{"name":"table","price":129.0}`)))
+	if err != nil {
+		t.Fatalf("POST failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 for valid request body, got %d", resp.StatusCode)
+	}
+
+	// Missing inferred required field -> 400.
+	resp, err = app.Test(httptest.NewRequest("POST", "/api/items", bytes.NewBufferString(`{"name":"table"}`)))
+	if err != nil {
+		t.Fatalf("POST invalid failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid request body, got %d", resp.StatusCode)
+	}
+
+	// Re-importing the same collection is idempotent.
+	resp, err = app.Test(httptest.NewRequest("POST", "/api/v1/imports/postman", bytes.NewReader([]byte(postmanImportCollection))))
+	if err != nil {
+		t.Fatalf("second import failed: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201, got %d", resp.StatusCode)
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		t.Fatalf("decode second import: %v", err)
+	}
+	if envelope.Data.Created != 0 || envelope.Data.Skipped != 3 {
+		t.Fatalf("expected created=0 skipped=3, got %+v", envelope.Data)
+	}
+}
+
+func TestImportPostmanRejectsInvalidCollection(t *testing.T) {
+	app := newImportApp(t)
+
+	req := httptest.NewRequest("POST", "/api/v1/imports/postman", bytes.NewBufferString(`{"info":{"name":"T"}}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", resp.StatusCode)
+	}
+}
