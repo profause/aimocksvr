@@ -113,6 +113,7 @@ func (s *service) Create(ctx context.Context, in CreateEndpointParams) (*models.
 		Status:        defaultString(in.Status, models.StatusActive),
 		RequestSchema: strings.TrimSpace(in.RequestSchema),
 		ErrorSim:      strings.TrimSpace(in.ErrorSim),
+		Public:        boolDefault(in.Public, true),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -162,6 +163,9 @@ func (s *service) Update(ctx context.Context, id uuid.UUID, in UpdateEndpointPar
 	}
 	if in.ErrorSim != nil {
 		existing.ErrorSim = strings.TrimSpace(*in.ErrorSim)
+	}
+	if in.Public != nil {
+		existing.Public = *in.Public
 	}
 
 	// Every modification produces a new version. A PUT that changes nothing is
@@ -233,6 +237,7 @@ func (s *service) Rollback(ctx context.Context, id uuid.UUID, version int) (*mod
 	existing.Status = defaultString(target.Status, models.StatusActive)
 	existing.RequestSchema = target.RequestSchema
 	existing.ErrorSim = target.ErrorSim
+	existing.Public = target.Public
 	existing.UpdatedAt = time.Now().UTC()
 
 	err = s.repo.WithTx(ctx, func(ctx context.Context) error {
@@ -480,6 +485,14 @@ func defaultString(value, fallback string) string {
 	return value
 }
 
+// boolDefault returns value when set and fallback otherwise.
+func boolDefault(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
 // generateSchema asks the AI provider to infer a JSON Schema for the
 // endpoint's response shape and returns it as JSON text. It returns an empty
 // string when AI is disabled, unreachable, or produced something that does not
@@ -547,6 +560,7 @@ func snapshotVersion(e *models.Endpoint, schema string, version int) *models.End
 		Status:        e.Status,
 		RequestSchema: e.RequestSchema,
 		ErrorSim:      e.ErrorSim,
+		Public:        e.Public,
 		Schema:        schema,
 		Version:       version,
 	}
@@ -563,7 +577,8 @@ func endpointSnapshotEqual(a, b *models.Endpoint) bool {
 		a.Stateful == b.Stateful &&
 		a.Status == b.Status &&
 		a.RequestSchema == b.RequestSchema &&
-		a.ErrorSim == b.ErrorSim
+		a.ErrorSim == b.ErrorSim &&
+		a.Public == b.Public
 }
 
 // findVersion returns the snapshot with the requested version number.
@@ -592,6 +607,7 @@ func diffVersions(from, to *models.EndpointVersion) []FieldChange {
 		{"status", from.Status, to.Status},
 		{"request_schema", from.RequestSchema, to.RequestSchema},
 		{"error_sim", from.ErrorSim, to.ErrorSim},
+		{"public", strconv.FormatBool(from.Public), strconv.FormatBool(to.Public)},
 		{"schema", from.Schema, to.Schema},
 	}
 	var changes []FieldChange

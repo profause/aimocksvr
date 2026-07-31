@@ -15,6 +15,7 @@ import (
 
 	"github.com/profause/aimocksvr/internal/ai"
 	"github.com/profause/aimocksvr/internal/api"
+	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/generator"
 	"github.com/profause/aimocksvr/internal/models"
 	"github.com/profause/aimocksvr/internal/validator"
@@ -54,7 +55,7 @@ func (g *fakeGenerator) Generate(_ context.Context, _ *generator.Request) (*gene
 func newDynamicApp(t *testing.T, store EndpointStore) *fiber.App {
 	t.Helper()
 	logger := zerolog.Nop()
-	dyn := NewDynamicHandler(store, generator.NewStatic(), validator.New(), &logger)
+	dyn := NewDynamicHandler(store, generator.NewStatic(), validator.New(), &config.Config{}, &logger)
 
 	app := fiber.New()
 	app.Use(dyn.Serve)
@@ -258,7 +259,7 @@ func TestDynamicHandlerGeneratorError(t *testing.T) {
 		},
 	}
 	logger := zerolog.Nop()
-	dyn := NewDynamicHandler(store, &fakeGenerator{err: context.DeadlineExceeded}, validator.New(), &logger)
+	dyn := NewDynamicHandler(store, &fakeGenerator{err: context.DeadlineExceeded}, validator.New(), &config.Config{}, &logger)
 
 	app := fiber.New()
 	app.Use(dyn.Serve)
@@ -288,7 +289,7 @@ func TestDynamicHandlerServesAIGeneratedSchemaValidResponse(t *testing.T) {
 		generator.NewStatic(),
 		&logger,
 	)
-	dyn := NewDynamicHandler(store, aiGen, validator.New(), &logger)
+	dyn := NewDynamicHandler(store, aiGen, validator.New(), &config.Config{}, &logger)
 
 	app := fiber.New()
 	app.Use(dyn.Serve)
@@ -368,7 +369,7 @@ func TestDynamicHandlerServesStatefulResourceFlow(t *testing.T) {
 		generator.NewStatic(),
 		&logger,
 	)
-	dyn := NewDynamicHandler(store, generator.NewStateful(&stateStore{}, aiGen, &logger), validator.New(), &logger)
+	dyn := NewDynamicHandler(store, generator.NewStateful(&stateStore{}, aiGen, &logger), validator.New(), &config.Config{}, &logger)
 
 	app := fiber.New()
 	app.Use(dyn.Serve)

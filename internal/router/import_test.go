@@ -14,6 +14,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/ai"
+	"github.com/profause/aimocksvr/internal/auth"
 	"github.com/profause/aimocksvr/internal/cache"
 	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/endpoint"
@@ -159,13 +160,14 @@ func newImportApp(t *testing.T) *fiber.App {
 	h := endpoint.NewHandler(esvc, &logger)
 	imp := importer.NewHandler(importer.NewService(esvc, &logger), &logger)
 
-	gen := generator.NewFaker(importSchemaLoader{repo: repo}, generator.NewStatic(), &logger)
-	dyn := NewDynamicHandler(repo, gen, validator.New(), &logger)
-
 	cfg := &config.Config{}
 	cfg.App.Name = "aimocksvr-test"
 
-	return New(cfg, &logger, h, imp, dyn)
+	gen := generator.NewFaker(importSchemaLoader{repo: repo}, generator.NewStatic(), &logger)
+	dyn := NewDynamicHandler(repo, gen, validator.New(), cfg, &logger)
+	ah := auth.NewHandler(cfg, auth.NewService(cfg, &logger), &logger)
+
+	return New(cfg, &logger, h, imp, dyn, ah)
 }
 
 const importSpec = `{

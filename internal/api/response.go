@@ -14,6 +14,7 @@ const (
 	CodeConflict        = "CONFLICT"
 	CodeInternalError   = "INTERNAL_ERROR"
 	CodeErrorSimulation = "ERROR_SIMULATION"
+	CodeUnauthorized    = "UNAUTHORIZED"
 )
 
 // Response is the envelope for successful responses.

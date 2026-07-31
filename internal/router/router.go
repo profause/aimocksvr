@@ -8,6 +8,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/api"
+	"github.com/profause/aimocksvr/internal/auth"
 	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/endpoint"
 	"github.com/profause/aimocksvr/internal/importer"
@@ -15,17 +16,19 @@ import (
 )
 
 // New builds and configures the Fiber application with all routes registered.
-func New(cfg *config.Config, logger *zerolog.Logger, h *endpoint.Handler, imp *importer.Handler, dyn *DynamicHandler) *fiber.App {
+func New(cfg *config.Config, logger *zerolog.Logger, h *endpoint.Handler, imp *importer.Handler, dyn *DynamicHandler, ah *auth.Handler) *fiber.App {
 	app := fiber.New(fiber.Config{
 		AppName:      cfg.App.Name,
 		ErrorHandler: errorHandler(logger),
 	})
 
 	app.Use(middleware.RequestLogger(logger))
+	app.Use(ah.Middleware())
 
 	apiGroup := app.Group("/api/v1")
 	h.Register(apiGroup)
 	imp.Register(apiGroup)
+	ah.Register(apiGroup)
 
 	registerHealth(app)
 	registerDynamic(app, dyn)

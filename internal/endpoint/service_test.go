@@ -618,6 +618,7 @@ func TestServiceUpdateKeepsSchemaWhenPromptUnchanged(t *testing.T) {
 func TestServiceCreateSnapshotsFullState(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newServiceWithRepo(repo)
+	private := false
 
 	e, err := svc.Create(context.Background(), CreateEndpointParams{
 		Method:        "POST",
@@ -629,9 +630,13 @@ func TestServiceCreateSnapshotsFullState(t *testing.T) {
 		Status:        models.StatusInactive,
 		RequestSchema: `{"type":"object"}`,
 		ErrorSim:      `{"status":503}`,
+		Public:        &private,
 	})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
+	}
+	if e.Public {
+		t.Errorf("expected public=false, got true")
 	}
 
 	versions, err := svc.ListVersions(context.Background(), e.ID)
@@ -662,6 +667,86 @@ func TestServiceCreateSnapshotsFullState(t *testing.T) {
 	}
 	if v.ErrorSim != `{"status":503}` {
 		t.Errorf("snapshot error_sim not captured: %q", v.ErrorSim)
+	}
+	if v.Public {
+		t.Errorf("snapshot public not captured: %v", v.Public)
+	}
+}
+
+func TestServiceCreateDefaultsPublicTrue(t *testing.T) {
+	svc := newServiceWithRepo(newFakeRepo())
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return users",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+	if !e.Public {
+		t.Error("expected public to default to true")
+	}
+
+	versions, err := svc.ListVersions(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("ListVersions failed: %v", err)
+	}
+	if !versions[0].Public {
+		t.Error("expected snapshot public to default to true")
+	}
+}
+
+func TestServiceUpdatePublicCreatesVersionAndDiff(t *testing.T) {
+	svc := newServiceWithRepo(newFakeRepo())
+	private := false
+
+	e, err := svc.Create(context.Background(), CreateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return users",
+	})
+	if err != nil {
+		t.Fatalf("Create failed: %v", err)
+	}
+
+	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+		Method: "GET",
+		Path:   "/users",
+		Prompt: "return users",
+		Public: &private,
+	}); err != nil {
+		t.Fatalf("Update failed: %v", err)
+	}
+
+	got, err := svc.Get(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got.Public {
+		t.Error("expected public to become false after update")
+	}
+
+	versions, err := svc.ListVersions(context.Background(), e.ID)
+	if err != nil {
+		t.Fatalf("ListVersions failed: %v", err)
+	}
+	if len(versions) != 2 || versions[0].Public {
+		t.Errorf("expected version 2 with public=false, got %+v", versions)
+	}
+
+	changes, err := svc.Diff(context.Background(), e.ID, 1)
+	if err != nil {
+		t.Fatalf("Diff failed: %v", err)
+	}
+	found := false
+	for _, c := range changes {
+		if c.Field == "public" && c.From == "true" && c.To == "false" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected public change in diff, got %+v", changes)
 	}
 }
 

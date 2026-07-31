@@ -14,6 +14,7 @@ import (
 	"go.uber.org/fx"
 
 	"github.com/profause/aimocksvr/internal/ai"
+	"github.com/profause/aimocksvr/internal/auth"
 	"github.com/profause/aimocksvr/internal/cache"
 	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/database"
@@ -36,6 +37,8 @@ func main() {
 			endpoint.NewHandler,
 			importer.NewService,
 			importer.NewHandler,
+			auth.NewService,
+			auth.NewHandler,
 			provideGenerator,
 			endpointSchemaLoader,
 			cache.New,

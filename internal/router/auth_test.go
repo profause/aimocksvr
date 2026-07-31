@@ -1,0 +1,260 @@
+package router
+
+import (
+	"encoding/json"
+	"io"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gofiber/fiber/v3"
+	"github.com/rs/zerolog"
+
+	"github.com/profause/aimocksvr/internal/ai"
+	"github.com/profause/aimocksvr/internal/auth"
+	"github.com/profause/aimocksvr/internal/cache"
+	"github.com/profause/aimocksvr/internal/config"
+	"github.com/profause/aimocksvr/internal/endpoint"
+	"github.com/profause/aimocksvr/internal/generator"
+	"github.com/profause/aimocksvr/internal/importer"
+	"github.com/profause/aimocksvr/internal/models"
+	"github.com/profause/aimocksvr/internal/validator"
+)
+
+// newAuthApp builds the full router with auth enabled and in-memory
+// persistence, mirroring the production wiring.
+func newAuthApp(t *testing.T) *fiber.App {
+	t.Helper()
+
+	repo := newImportRepo()
+	logger := zerolog.Nop()
+	esvc := endpoint.NewService(repo, cache.Noop{}, ai.Noop{}, validator.New(), &logger)
+	h := endpoint.NewHandler(esvc, &logger)
+	imp := importer.NewHandler(importer.NewService(esvc, &logger), &logger)
+
+	cfg := &config.Config{}
+	cfg.App.Name = "aimocksvr-test"
+	cfg.Auth.Enabled = true
+	cfg.Auth.JWTSecret = "test-secret"
+	cfg.Auth.JWTIssuer = "mocksvr"
+	cfg.Auth.JWTAudience = "mocksvr"
+	cfg.Auth.JWTTTL = "1h"
+	cfg.Auth.APIKeys = "dev:sk_test_123"
+	cfg.Auth.WorkspaceTokens = "acme:tok_acme_456"
+
+	gen := generator.NewFaker(importSchemaLoader{repo: repo}, generator.NewStatic(), &logger)
+	dyn := NewDynamicHandler(repo, gen, validator.New(), cfg, &logger)
+	ah := auth.NewHandler(cfg, auth.NewService(cfg, &logger), &logger)
+
+	return New(cfg, &logger, h, imp, dyn, ah)
+}
+
+func TestAuthenticationViaRegistryAPI(t *testing.T) {
+	app := newAuthApp(t)
+
+	// /health is always public.
+	resp, err := app.Test(httptest.NewRequest("GET", "/health", nil))
+	if err != nil {
+		t.Fatalf("health failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected /health 200, got %d", resp.StatusCode)
+	}
+
+	// The control plane requires a credential.
+	resp, err = app.Test(httptest.NewRequest("POST", "/api/v1/endpoints", strings.NewReader(`{
+		"method": "get",
+		"path": "/secret",
+		"prompt": "a private endpoint",
+		"public": false
+	}`)))
+	if err != nil {
+		t.Fatalf("create without credentials failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 without credentials, got %d", resp.StatusCode)
+	}
+
+	// Create a private mock endpoint using an API key.
+	req := httptest.NewRequest("POST", "/api/v1/endpoints", strings.NewReader(`{
+		"method": "get",
+		"path": "/secret",
+		"prompt": "a private endpoint",
+		"public": false
+	}`))
+	req.Header.Set("X-API-Key", "sk_test_123")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatalf("create with API key failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201 with API key, got %d", resp.StatusCode)
+	}
+
+	// The private endpoint rejects anonymous requests but accepts every
+	// supported credential kind.
+	anonymous := httptest.NewRequest("GET", "/secret", nil)
+	resp, err = app.Test(anonymous)
+	if err != nil {
+		t.Fatalf("GET /secret anonymous failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Fatalf("expected 401 on private endpoint, got %d", resp.StatusCode)
+	}
+
+	withKey := httptest.NewRequest("GET", "/secret", nil)
+	withKey.Header.Set("Authorization", "Bearer sk_test_123")
+	if resp, err = app.Test(withKey); err != nil {
+		t.Fatalf("GET /secret with key failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 with API key, got %d", resp.StatusCode)
+	}
+
+	withWorkspace := httptest.NewRequest("GET", "/secret", nil)
+	withWorkspace.Header.Set("X-Workspace-Token", "tok_acme_456")
+	if resp, err = app.Test(withWorkspace); err != nil {
+		t.Fatalf("GET /secret with workspace token failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 with workspace token, got %d", resp.StatusCode)
+	}
+
+	// Mint a JWT from the API key and use it against both the control plane
+	// and the private mock endpoint.
+	mintReq := httptest.NewRequest("POST", "/api/v1/auth/token", strings.NewReader(`{"api_key":"sk_test_123"}`))
+	mintReq.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(mintReq)
+	if err != nil {
+		t.Fatalf("token minting failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 on token minting, got %d (body %q)", resp.StatusCode, body)
+	}
+	var minted struct {
+		Data struct {
+			Token string `json:"token"`
+			Kind  string `json:"kind"`
+			Name  string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &minted); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	if minted.Data.Token == "" || minted.Data.Kind != auth.KindAPIKey || minted.Data.Name != "dev" {
+		t.Errorf("unexpected minted identity: %+v", minted.Data)
+	}
+
+	whoami := httptest.NewRequest("GET", "/api/v1/auth/whoami", nil)
+	whoami.Header.Set("Authorization", "Bearer "+minted.Data.Token)
+	resp, err = app.Test(whoami)
+	if err != nil {
+		t.Fatalf("whoami failed: %v", err)
+	}
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 on whoami, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), auth.KindJWT) || !strings.Contains(string(body), "dev") {
+		t.Errorf("expected JWT identity in whoami, got %q", body)
+	}
+
+	withJWT := httptest.NewRequest("GET", "/secret", nil)
+	withJWT.Header.Set("Authorization", "Bearer "+minted.Data.Token)
+	if resp, err = app.Test(withJWT); err != nil {
+		t.Fatalf("GET /secret with JWT failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 on private endpoint with JWT, got %d", resp.StatusCode)
+	}
+
+	// A public endpoint is served without any credential. public defaults to
+	// true when omitted.
+	req = httptest.NewRequest("POST", "/api/v1/endpoints", strings.NewReader(`{
+		"method": "get",
+		"path": "/open",
+		"prompt": "a public endpoint"
+	}`))
+	req.Header.Set("X-API-Key", "sk_test_123")
+	resp, err = app.Test(req)
+	if err != nil {
+		t.Fatalf("create public endpoint failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201 on public endpoint create, got %d", resp.StatusCode)
+	}
+
+	anonymous = httptest.NewRequest("GET", "/open", nil)
+	resp, err = app.Test(anonymous)
+	if err != nil {
+		t.Fatalf("GET /open failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 on public endpoint, got %d", resp.StatusCode)
+	}
+}
+
+func TestDynamicHandlerEnforcesEndpointPrivacy(t *testing.T) {
+	logger := zerolog.Nop()
+	open := newEndpoint("GET", "/open")
+	open.Public = true
+	private := newEndpoint("GET", "/secret")
+	private.Public = false
+	store := &fakeStore{
+		endpoints: []models.Endpoint{
+			open,
+			private,
+		},
+	}
+
+	cfg := &config.Config{}
+	cfg.Auth.Enabled = true
+	dyn := NewDynamicHandler(store, generator.NewStatic(), validator.New(), cfg, &logger)
+	app := fiber.New()
+	app.Use(dyn.Serve)
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/open", nil))
+	if err != nil {
+		t.Fatalf("GET /open failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Errorf("expected 200 on public endpoint, got %d", resp.StatusCode)
+	}
+
+	resp, err = app.Test(httptest.NewRequest("GET", "/secret", nil))
+	if err != nil {
+		t.Fatalf("GET /secret failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusUnauthorized {
+		t.Errorf("expected 401 on private endpoint, got %d", resp.StatusCode)
+	}
+
+	// With auth disabled the same private endpoint is served openly.
+	cfgDisabled := &config.Config{}
+	cfgDisabled.Auth.Enabled = false
+	dynDisabled := NewDynamicHandler(store, generator.NewStatic(), validator.New(), cfgDisabled, &logger)
+	appDisabled := fiber.New()
+	appDisabled.Use(dynDisabled.Serve)
+	resp, err = appDisabled.Test(httptest.NewRequest("GET", "/secret", nil))
+	if err != nil {
+		t.Fatalf("GET /secret failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Errorf("expected 200 on private endpoint when auth disabled, got %d", resp.StatusCode)
+	}
+}

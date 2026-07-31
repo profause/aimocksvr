@@ -1,8 +1,9 @@
 # MockSvr
 
-AI-powered API mock server. Phases 1-11 of the roadmap: core server, endpoint
+AI-powered API mock server. Phases 1-16 of the roadmap: core server, endpoint
 registry, dynamic routing, response generation (AI + faker + static fallback),
-request variable injection, stateful resources, and OpenAPI import.
+request variable injection, stateful resources, OpenAPI import, request schema
+validation, Postman import, error simulation, versioning, and authentication.
 
 ## Stack
 
@@ -75,6 +76,8 @@ Failure:
 | GET    | /api/v1/endpoints/:id/history | List request history       |
 | POST   | /api/v1/imports/openapi       | Import an OpenAPI document  |
 | POST   | /api/v1/imports/postman       | Import a Postman collection |
+| POST   | /api/v1/auth/token            | Mint a JWT from an API key / workspace token |
+| GET    | /api/v1/auth/whoami           | Report the authenticated identity |
 
 Example create:
 
@@ -88,10 +91,12 @@ Creating or updating an endpoint always records a new `EndpointVersion`:
 version 1 on create, then a bump for every modification (a PUT that changes
 nothing is skipped). Each version is a full snapshot of the endpoint — method,
 path, description, prompt, response type, stateful, status, `request_schema`,
-`error_sim` and the response schema. Create accepts `request_schema` (a JSON
-Schema string for the request body) and `error_sim` (a JSON config string for
-failure simulation); update accepts both as optional strings, where `""` clears
-the value and omitting it keeps the current one.
+`error_sim`, `public` and the response schema. Create accepts `request_schema`
+(a JSON Schema string for the request body), `error_sim` (a JSON config string
+for failure simulation) and `public` (whether the mock endpoint is served
+without authentication); update accepts the first two as optional strings and
+`public` as an optional boolean, where omitting a field keeps the current one
+and `""` clears the string fields.
 
 Every endpoint keeps its version history:
 
@@ -112,6 +117,58 @@ Rolling back to the latest version or to a version that does not exist is
 rejected with `VALIDATION_ERROR`. Because the response schema is derived from
 the prompt, it is regenerated only when the prompt changes; rolling back
 restores the schema captured in the target version.
+
+## Authentication
+
+Auth is disabled by default, so the server behaves as an open mock. Enable it
+with `MOCKSVR_AUTH_ENABLED=true` and configure credentials:
+
+| Variable                         | Description                              |
+| -------------------------------- | ---------------------------------------- |
+| `MOCKSVR_AUTH_ENABLED`           | Enable auth (default `false`)            |
+| `MOCKSVR_AUTH_API_KEYS`          | Comma-separated `name:secret` API keys   |
+| `MOCKSVR_AUTH_WORKSPACE_TOKENS`  | Comma-separated `workspace:secret` tokens |
+| `MOCKSVR_AUTH_JWT_SECRET`        | HS256 secret for JWT validation/minting  |
+| `MOCKSVR_AUTH_JWT_ISSUER`        | Expected JWT issuer (default `mocksvr`)  |
+| `MOCKSVR_AUTH_JWT_AUDIENCE`      | Expected JWT audience (default `mocksvr`)|
+| `MOCKSVR_AUTH_JWT_TTL`           | Minted JWT lifetime (default `1h`)       |
+
+Secrets are stored only as SHA-256 hashes in memory. Three credential kinds are
+accepted:
+
+- **API keys** — `Authorization: Bearer <key>` or `X-API-Key: <key>`.
+- **Workspace tokens** — `Authorization: Bearer <token>` or
+  `X-Workspace-Token: <token>`.
+- **JWTs** — shared-secret HS256 tokens with the configured issuer and
+  audience, sent as `Authorization: Bearer <jwt>`.
+
+When auth is enabled:
+
+- `/health` is always public.
+- The control plane (`/api/v1/*`) requires a valid credential, except
+  `POST /api/v1/auth/token`, which mints a short-lived JWT from a valid API key
+  or workspace token.
+- Mock endpoints are public by default. Set `"public": false` when creating or
+  updating an endpoint to require a valid credential; the `public` flag is
+  versioned like every other field.
+
+```sh
+# Mint a JWT from an API key, then use it on the control plane
+curl -X POST http://localhost:8080/api/v1/auth/token \
+  -H 'Content-Type: application/json' -d '{"api_key":"sk_test_123"}'
+# => {"success":true,"data":{"token":"eyJ...","kind":"api_key","name":"dev"}}
+
+curl http://localhost:8080/api/v1/auth/whoami -H 'Authorization: Bearer eyJ...'
+# => {"success":true,"data":{"kind":"jwt","name":"dev"}}
+
+# Create a private endpoint and call it with a credential
+curl -X POST http://localhost:8080/api/v1/endpoints \
+  -H 'Content-Type: application/json' -H 'X-API-Key: sk_test_123' \
+  -d '{"method":"get","path":"/secret","prompt":"a private endpoint","public":false}'
+
+curl http://localhost:8080/secret                      # 401 UNAUTHORIZED
+curl http://localhost:8080/secret -H 'X-API-Key: sk_test_123'   # 200
+```
 
 ## Dynamic routing
 

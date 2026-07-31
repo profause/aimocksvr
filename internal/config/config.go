@@ -27,6 +27,7 @@ type Config struct {
 	Database Database `mapstructure:"database"`
 	Cache    Cache    `mapstructure:"cache"`
 	AI       AI       `mapstructure:"ai"`
+	Auth     Auth     `mapstructure:"auth"`
 	Log      Log      `mapstructure:"log"`
 }
 
@@ -67,6 +68,22 @@ type AI struct {
 
 type Log struct {
 	Level string `mapstructure:"level"`
+}
+
+// Auth holds the authentication settings. Auth is disabled by default so the
+// server behaves as an open mock. When enabled, the control plane requires a
+// valid credential (API key, workspace token or JWT) and mock endpoints can be
+// marked non-public. API keys and workspace tokens are configured as
+// comma-separated "name:secret" entries; JWTs are shared-secret HS256 tokens
+// validated against the configured issuer and audience.
+type Auth struct {
+	Enabled         bool   `mapstructure:"enabled"`
+	JWTSecret       string `mapstructure:"jwt_secret"`
+	JWTIssuer       string `mapstructure:"jwt_issuer"`
+	JWTAudience     string `mapstructure:"jwt_audience"`
+	JWTTTL          string `mapstructure:"jwt_ttl"`
+	APIKeys         string `mapstructure:"api_keys"`
+	WorkspaceTokens string `mapstructure:"workspace_tokens"`
 }
 
 // Load reads configuration from .env, configs/config.yaml and environment
@@ -116,6 +133,13 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("ai.api_key", "")
 	v.SetDefault("ai.model", "")
 	v.SetDefault("ai.timeout", "60s")
+	v.SetDefault("auth.enabled", false)
+	v.SetDefault("auth.jwt_secret", "")
+	v.SetDefault("auth.jwt_issuer", "mocksvr")
+	v.SetDefault("auth.jwt_audience", "mocksvr")
+	v.SetDefault("auth.jwt_ttl", "1h")
+	v.SetDefault("auth.api_keys", "")
+	v.SetDefault("auth.workspace_tokens", "")
 	v.SetDefault("log.level", "info")
 }
 

@@ -16,6 +16,8 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/api"
+	"github.com/profause/aimocksvr/internal/auth"
+	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/generator"
 	"github.com/profause/aimocksvr/internal/models"
 	"github.com/profause/aimocksvr/internal/validator"
@@ -32,15 +34,20 @@ type EndpointStore interface {
 // serves a generated response. It is registered as a catch-all, so endpoints
 // are served from the database with no restart and no static routes.
 type DynamicHandler struct {
-	store     EndpointStore
-	generator generator.Generator
-	validate  validator.Validator
-	logger    *zerolog.Logger
+	store       EndpointStore
+	generator   generator.Generator
+	validate    validator.Validator
+	authEnabled bool
+	logger      *zerolog.Logger
 }
 
 // NewDynamicHandler creates a dynamic mock endpoint handler.
-func NewDynamicHandler(store EndpointStore, gen generator.Generator, v validator.Validator, logger *zerolog.Logger) *DynamicHandler {
-	return &DynamicHandler{store: store, generator: gen, validate: v, logger: logger}
+func NewDynamicHandler(store EndpointStore, gen generator.Generator, v validator.Validator, cfg *config.Config, logger *zerolog.Logger) *DynamicHandler {
+	authEnabled := false
+	if cfg != nil {
+		authEnabled = cfg.Auth.Enabled
+	}
+	return &DynamicHandler{store: store, generator: gen, validate: v, authEnabled: authEnabled, logger: logger}
 }
 
 // Serve resolves the current request to an endpoint and writes the generated
@@ -60,6 +67,13 @@ func (h *DynamicHandler) Serve(c fiber.Ctx) error {
 	if !ok {
 		return api.Fail(c, fiber.StatusNotFound, api.CodeNotFound,
 			fmt.Sprintf("no mock endpoint matches %s %s", method, path))
+	}
+
+	// When auth is enabled, non-public mock endpoints require a valid
+	// identity, which the auth middleware stores on the context.
+	if h.authEnabled && !e.Public && !hasIdentity(c) {
+		return api.Fail(c, fiber.StatusUnauthorized, api.CodeUnauthorized,
+			fmt.Sprintf("endpoint %s %s is private and requires authentication", e.Method, e.Path))
 	}
 
 	// Endpoints may declare a request schema; a non-conforming body is
@@ -171,6 +185,13 @@ func nonNilParams(params map[string]string) map[string]string {
 		return map[string]string{}
 	}
 	return params
+}
+
+// hasIdentity reports whether the auth middleware stored an identity for the
+// current request.
+func hasIdentity(c fiber.Ctx) bool {
+	id, ok := c.Locals(auth.IdentityKey).(auth.Identity)
+	return ok && id.Kind != "" && id.Name != ""
 }
 
 func headersMap(h map[string][]string) http.Header {

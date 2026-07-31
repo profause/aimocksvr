@@ -488,6 +488,15 @@ Features
 - Version history
 - Live testing
 
+# Required Reading
+
+Before making any changes, read the following documents in order.
+
+`FRONTEND.md`
+   - React dashboard architecture
+   - UI implementation plan
+   - Component guidelines
+
 ---
 
 ## Phase 18 — CLI
