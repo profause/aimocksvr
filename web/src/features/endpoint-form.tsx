@@ -30,14 +30,14 @@ import { createEndpoint, updateEndpoint } from '@/api/endpoints'
 const endpointSchema = z.object({
   method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
   path: z.string().min(1, 'Path is required').startsWith('/', 'Path must start with /'),
-  description: z.string().optional().or(z.literal('')),
+  description: z.string(),
   prompt: z.string().min(1, 'Prompt is required'),
-  response_type: z.enum(['json', 'text', 'html']).default('json'),
-  stateful: z.boolean().default(false),
-  status: z.enum(['active', 'inactive', 'draft']).default('active'),
-  request_schema: z.string().optional().or(z.literal('')),
-  error_sim: z.string().optional().or(z.literal('')),
-  public: z.boolean().default(true),
+  response_type: z.enum(['json', 'text', 'html']),
+  stateful: z.boolean(),
+  status: z.enum(['active', 'inactive', 'draft']),
+  request_schema: z.string(),
+  error_sim: z.string(),
+  public: z.boolean(),
 })
 
 type EndpointFormValues = z.infer<typeof endpointSchema>
@@ -62,46 +62,33 @@ const defaultValues: EndpointFormValues = {
   public: true,
 }
 
+function getFormValues(endpoint: Endpoint): EndpointFormValues {
+  return {
+    method: endpoint.method as EndpointFormValues['method'],
+    path: endpoint.path,
+    description: endpoint.description || '',
+    prompt: endpoint.prompt,
+    response_type: (endpoint.response_type as EndpointFormValues['response_type']) || 'json',
+    stateful: endpoint.stateful,
+    status: (endpoint.status as EndpointFormValues['status']) || 'active',
+    request_schema: endpoint.request_schema || '',
+    error_sim: endpoint.error_sim || '',
+    public: endpoint.public,
+  }
+}
+
 export function EndpointForm({ open, onOpenChange, endpoint, onSuccess }: EndpointFormProps) {
   const [loading, setLoading] = useState(false)
   const isEdit = !!endpoint
 
   const form = useForm<EndpointFormValues>({
     resolver: zodResolver(endpointSchema),
-    defaultValues: isEdit
-      ? {
-          method: endpoint!.method as EndpointFormValues['method'],
-          path: endpoint!.path,
-          description: endpoint!.description || '',
-          prompt: endpoint!.prompt,
-          response_type: (endpoint!.response_type as EndpointFormValues['response_type']) || 'json',
-          stateful: endpoint!.stateful,
-          status: (endpoint!.status as EndpointFormValues['status']) || 'active',
-          request_schema: endpoint!.request_schema || '',
-          error_sim: endpoint!.error_sim || '',
-          public: endpoint!.public,
-        }
-      : defaultValues,
+    defaultValues: isEdit ? getFormValues(endpoint!) : defaultValues,
   })
 
   useEffect(() => {
     if (open) {
-      form.reset(
-        isEdit
-          ? {
-              method: endpoint!.method as EndpointFormValues['method'],
-              path: endpoint!.path,
-              description: endpoint!.description || '',
-              prompt: endpoint!.prompt,
-              response_type: (endpoint!.response_type as EndpointFormValues['response_type']) || 'json',
-              stateful: endpoint!.stateful,
-              status: (endpoint!.status as EndpointFormValues['status']) || 'active',
-              request_schema: endpoint!.request_schema || '',
-              error_sim: endpoint!.error_sim || '',
-              public: endpoint!.public,
-            }
-          : defaultValues
-      )
+      form.reset(isEdit ? getFormValues(endpoint!) : defaultValues)
     }
   }, [open, endpoint, form, isEdit])
 

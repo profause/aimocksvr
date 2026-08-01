@@ -25,5 +25,19 @@ ai:
   model: llama3.2
   timeout: 60s
 
+# Auth is disabled by default. When enabled, the control plane requires a
+# valid credential and mock endpoints can be marked private.
+auth:
+  enabled: false
+  api_keys: ""              # comma-separated "name:secret" pairs
+  workspace_tokens: ""      # comma-separated "workspace:secret" pairs
+  jwt_secret: ""            # HS256 secret for JWT validation/minting
+  jwt_issuer: mocksvr
+  jwt_audience: mocksvr
+  jwt_ttl: 1h
+
+dashboard:
+  enabled: false
+
 log:
   level: info
