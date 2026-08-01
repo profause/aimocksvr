@@ -131,6 +131,50 @@ func (f *fakeRepo) ListHistory(ctx context.Context, endpointID uuid.UUID) ([]mod
 	return out, nil
 }
 
+func (f *fakeRepo) CountEndpoints(ctx context.Context) (int, error) {
+	return len(f.endpoints), nil
+}
+
+func (f *fakeRepo) CountRecentRequests(ctx context.Context, since time.Time) (int, error) {
+	count := 0
+	for _, h := range f.history {
+		if h.CreatedAt.After(since) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeRepo) AvgLatency(ctx context.Context, since time.Time) (float64, error) {
+	var sum, count float64
+	for _, h := range f.history {
+		if h.CreatedAt.After(since) {
+			sum += float64(h.Latency)
+			count++
+		}
+	}
+	if count == 0 {
+		return 0, nil
+	}
+	return sum / count, nil
+}
+
+func (f *fakeRepo) ErrorRate(ctx context.Context, since time.Time) (float64, error) {
+	var total, errors float64
+	for _, h := range f.history {
+		if h.CreatedAt.After(since) {
+			total++
+			if strings.Contains(h.Response, `"error"`) {
+				errors++
+			}
+		}
+	}
+	if total == 0 {
+		return 0, nil
+	}
+	return errors / total * 100, nil
+}
+
 func newTestService() Service {
 	return newServiceWithRepo(newFakeRepo())
 }

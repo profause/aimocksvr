@@ -36,6 +36,8 @@ func (h *Handler) Register(r fiber.Router) {
 	group.Get("/:id/versions/:version/diff", h.DiffVersion)
 	group.Post("/:id/versions/:version/rollback", h.Rollback)
 	group.Get("/:id/history", h.ListHistory)
+
+	r.Get("/stats", h.Stats)
 }
 
 func (h *Handler) Create(c fiber.Ctx) error {
@@ -171,6 +173,14 @@ func (h *Handler) ListHistory(c fiber.Ctx) error {
 		return h.fail(c, err)
 	}
 	return api.OK(c, map[string]any{"history": history})
+}
+
+func (h *Handler) Stats(c fiber.Ctx) error {
+	stats, err := h.svc.Stats(c.Context())
+	if err != nil {
+		return h.fail(c, err)
+	}
+	return api.OK(c, stats)
 }
 
 // fail maps service errors to HTTP responses.

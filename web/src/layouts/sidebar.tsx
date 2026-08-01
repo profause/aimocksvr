@@ -6,6 +6,7 @@ import {
   Settings,
   LayoutDashboard,
   TestTubes,
+  BookOpen,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useSidebarStore } from '@/stores/sidebar-store'
@@ -16,6 +17,7 @@ const navItems = [
   { label: 'Request Logs', icon: History, path: '/logs' },
   { label: 'Scenarios', icon: TestTubes, path: '/scenarios' },
   { label: 'Imports', icon: Upload, path: '/imports' },
+  { label: 'Docs', icon: BookOpen, path: '/docs' },
   { label: 'Settings', icon: Settings, path: '/settings' },
 ]
 

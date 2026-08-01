@@ -7,7 +7,9 @@ import (
 	"io"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/google/uuid"
@@ -130,6 +132,38 @@ func (f *importRepo) ListHistory(_ context.Context, endpointID uuid.UUID) ([]mod
 func (f *importRepo) CreateHistory(_ context.Context, h *models.RequestHistory) error {
 	f.history = append(f.history, *h)
 	return nil
+}
+
+func (f *importRepo) CountEndpoints(_ context.Context) (int, error) {
+	return len(f.endpoints), nil
+}
+
+func (f *importRepo) CountRecentRequests(_ context.Context, _ time.Time) (int, error) {
+	return len(f.history), nil
+}
+
+func (f *importRepo) AvgLatency(_ context.Context, _ time.Time) (float64, error) {
+	if len(f.history) == 0 {
+		return 0, nil
+	}
+	var sum int64
+	for _, h := range f.history {
+		sum += h.Latency
+	}
+	return float64(sum) / float64(len(f.history)), nil
+}
+
+func (f *importRepo) ErrorRate(_ context.Context, _ time.Time) (float64, error) {
+	if len(f.history) == 0 {
+		return 0, nil
+	}
+	var errors int
+	for _, h := range f.history {
+		if strings.Contains(h.Response, `"error"`) {
+			errors++
+		}
+	}
+	return float64(errors) / float64(len(f.history)) * 100, nil
 }
 
 // importSchemaLoader adapts the repo to the generator's SchemaLoader, like the

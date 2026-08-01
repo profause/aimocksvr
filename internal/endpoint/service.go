@@ -77,6 +77,15 @@ type Service interface {
 	Import(ctx context.Context, items []ImportItem) (ImportResult, error)
 	Rollback(ctx context.Context, id uuid.UUID, version int) (*models.Endpoint, error)
 	Diff(ctx context.Context, id uuid.UUID, version int) ([]FieldChange, error)
+	Stats(ctx context.Context) (*DashboardStats, error)
+}
+
+// DashboardStats holds the aggregated metrics shown on the dashboard.
+type DashboardStats struct {
+	TotalEndpoints  int     `json:"total_endpoints"`
+	ActiveRequests  int     `json:"active_requests"`
+	AvgLatency      float64 `json:"avg_latency"`
+	ErrorRate       float64 `json:"error_rate"`
 }
 
 type service struct {
@@ -307,6 +316,37 @@ func (s *service) ListHistory(ctx context.Context, endpointID uuid.UUID) ([]mode
 		return nil, err
 	}
 	return s.repo.ListHistory(ctx, endpointID)
+}
+
+func (s *service) Stats(ctx context.Context) (*DashboardStats, error) {
+	since := time.Now().Add(-24 * time.Hour)
+
+	total, err := s.repo.CountEndpoints(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("stats: count endpoints: %w", err)
+	}
+
+	requests, err := s.repo.CountRecentRequests(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("stats: count recent requests: %w", err)
+	}
+
+	latency, err := s.repo.AvgLatency(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("stats: avg latency: %w", err)
+	}
+
+	errorRate, err := s.repo.ErrorRate(ctx, since)
+	if err != nil {
+		return nil, fmt.Errorf("stats: error rate: %w", err)
+	}
+
+	return &DashboardStats{
+		TotalEndpoints: total,
+		ActiveRequests: requests,
+		AvgLatency:     latency,
+		ErrorRate:      errorRate,
+	}, nil
 }
 
 // Import creates endpoints in a single transaction from pre-built items.

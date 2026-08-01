@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/uptrace/bun"
@@ -46,6 +47,11 @@ type Repository interface {
 	ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error)
 	ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error)
 	CreateHistory(ctx context.Context, h *models.RequestHistory) error
+
+	CountEndpoints(ctx context.Context) (int, error)
+	CountRecentRequests(ctx context.Context, since time.Time) (int, error)
+	AvgLatency(ctx context.Context, since time.Time) (float64, error)
+	ErrorRate(ctx context.Context, since time.Time) (float64, error)
 }
 
 type repository struct {
@@ -182,4 +188,65 @@ func (r *repository) CreateHistory(ctx context.Context, h *models.RequestHistory
 		return fmt.Errorf("insert request history: %w", err)
 	}
 	return nil
+}
+
+func (r *repository) CountEndpoints(ctx context.Context) (int, error) {
+	count, err := r.db.NewSelect().Model((*models.Endpoint)(nil)).Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count endpoints: %w", err)
+	}
+	return count, nil
+}
+
+func (r *repository) CountRecentRequests(ctx context.Context, since time.Time) (int, error) {
+	count, err := r.db.NewSelect().
+		Model((*models.RequestHistory)(nil)).
+		Where("created_at >= ?", since).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count recent requests: %w", err)
+	}
+	return count, nil
+}
+
+func (r *repository) AvgLatency(ctx context.Context, since time.Time) (float64, error) {
+	var result struct {
+		AvgLatency sql.NullFloat64 `bun:"avg_latency"`
+	}
+	err := r.db.NewSelect().
+		ColumnExpr("AVG(latency) AS avg_latency").
+		Table("request_history").
+		Where("created_at >= ?", since).
+		Scan(ctx, &result)
+	if err != nil {
+		return 0, fmt.Errorf("avg latency: %w", err)
+	}
+	if !result.AvgLatency.Valid {
+		return 0, nil
+	}
+	return result.AvgLatency.Float64, nil
+}
+
+func (r *repository) ErrorRate(ctx context.Context, since time.Time) (float64, error) {
+	total, err := r.db.NewSelect().
+		Model((*models.RequestHistory)(nil)).
+		Where("created_at >= ?", since).
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count total requests: %w", err)
+	}
+	if total == 0 {
+		return 0, nil
+	}
+
+	errorCount, err := r.db.NewSelect().
+		Model((*models.RequestHistory)(nil)).
+		Where("created_at >= ?", since).
+		Where("response LIKE '%\"error\"%'").
+		Count(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("count error requests: %w", err)
+	}
+
+	return float64(errorCount) / float64(total) * 100, nil
 }

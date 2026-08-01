@@ -6,6 +6,7 @@ import { EndpointsPage } from '@/pages/endpoints-page'
 import { LogsPage } from '@/pages/logs-page'
 import { ScenariosPage } from '@/pages/scenarios-page'
 import { ImportsPage } from '@/pages/imports-page'
+import { DocsPage } from '@/pages/docs-page'
 import { SettingsPage } from '@/pages/settings-page'
 
 export function AppRoutes() {
@@ -17,6 +18,7 @@ export function AppRoutes() {
         <Route path="/logs" element={<LogsPage />} />
         <Route path="/scenarios" element={<ScenariosPage />} />
         <Route path="/imports" element={<ImportsPage />} />
+        <Route path="/docs" element={<DocsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
       </Route>
     </Routes>

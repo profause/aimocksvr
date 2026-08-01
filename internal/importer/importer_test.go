@@ -59,6 +59,10 @@ func (f *fakeEndpointService) Diff(context.Context, uuid.UUID, int) ([]endpoint.
 	return nil, nil
 }
 
+func (f *fakeEndpointService) Stats(context.Context) (*endpoint.DashboardStats, error) {
+	return nil, nil
+}
+
 func newTestService(f *fakeEndpointService) *Service {
 	logger := zerolog.Nop()
 	return NewService(f, &logger)
