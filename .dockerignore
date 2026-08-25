@@ -1,0 +1,12 @@
+.git
+.agents
+.vscode
+node_modules
+web/node_modules
+bin
+*.log
+.DS_Store
+Tiltfile
+docker-compose.yml
+.env
+configs/config.yaml
