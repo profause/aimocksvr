@@ -17,8 +17,35 @@ import (
 //go:embed all:dist/*
 var distFS embed.FS
 
-// Register serves the embedded SPA. Non-API requests that don't match a
-// static asset fall back to index.html for client-side routing.
+// spaRoutes are the embedded dashboard's client-side navigation paths. The
+// static handler only falls back to index.html for these; any other path is
+// passed through (c.Next()) so the dynamic mock catch-all can serve user-created
+// mock endpoints at arbitrary paths.
+var spaRoutes = map[string]bool{
+	"/":          true,
+	"/endpoints": true,
+	"/logs":      true,
+	"/scenarios": true,
+	"/imports":   true,
+	"/docs":      true,
+	"/settings":  true,
+}
+
+// serveIndex returns the SPA bootstrap page, or false when the caller should
+// continue to the next handler (c.Next()).
+func serveIndex(c fiber.Ctx) bool {
+	idx, readErr := distFS.ReadFile("dist/index.html")
+	if readErr != nil {
+		return false
+	}
+	c.Type("html")
+	c.Send(idx)
+	return true
+}
+
+// Register serves the embedded SPA. Non-API requests that match a static asset
+// are served as files; requests that match a known client-side route fall back
+// to index.html; everything else continues to the mock catch-all.
 func Register(app *fiber.App) {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
@@ -41,24 +68,21 @@ func Register(app *fiber.App) {
 
 		f, err := sub.Open(filePath)
 		if err != nil {
-			// File not found — serve index.html for SPA routing
-			idx, readErr := distFS.ReadFile("dist/index.html")
-			if readErr != nil {
-				return c.Next()
+			// Not a static file — serve the SPA bootstrap only for a known
+			// client-side route; otherwise let the mock catch-all handle it.
+			if spaRoutes[reqPath] && serveIndex(c) {
+				return nil
 			}
-			c.Type("html")
-			return c.Send(idx)
+			return c.Next()
 		}
 		defer f.Close()
 
 		info, err := f.Stat()
 		if err != nil || info.IsDir() {
-			idx, readErr := distFS.ReadFile("dist/index.html")
-			if readErr != nil {
-				return c.Next()
+			if spaRoutes[reqPath] && serveIndex(c) {
+				return nil
 			}
-			c.Type("html")
-			return c.Send(idx)
+			return c.Next()
 		}
 
 		ext := path.Ext(filePath)

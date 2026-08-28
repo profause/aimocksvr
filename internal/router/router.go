@@ -32,11 +32,15 @@ func New(cfg *config.Config, logger *zerolog.Logger, h *endpoint.Handler, imp *i
 	ah.Register(apiGroup)
 
 	registerHealth(app)
-	registerDynamic(app, dyn)
 
+	// Register the embedded web dashboard (when enabled) before the dynamic
+	// mock catch-all. Both are app.Use handlers; Fiber runs them in registration
+	// order, so the catch-all would otherwise shadow the SPA.
 	if cfg.Dashboard.Enabled {
 		web.Register(app)
 	}
+
+	registerDynamic(app, dyn)
 
 	return app
 }

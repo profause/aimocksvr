@@ -4,7 +4,7 @@ app:
 
 server:
   host: 0.0.0.0
-  port: 8080
+  port: 80
 
 database:
   url: postgres://mocksvr:mocksvr@localhost:5432/mocksvr?sslmode=disable
