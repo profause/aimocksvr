@@ -60,7 +60,7 @@ services:
       MOCKSVR_LOG_LEVEL: ${MOCKSVR_LOG_LEVEL:-info}
 
     ports:
-      - "8080:8080"
+      - "8080"
 
     healthcheck:
       test: ["CMD", "/healthcheck", "http://127.0.0.1:8080/health"]
