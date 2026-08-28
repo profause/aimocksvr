@@ -42,7 +42,7 @@ services:
       MOCKSVR_DASHBOARD_ENABLED: "true"
 
       MOCKSVR_SERVER_HOST: 0.0.0.0
-      MOCKSVR_SERVER_PORT: "80"
+      MOCKSVR_SERVER_PORT: "8080"
 
       MOCKSVR_DATABASE_URL: postgres://mocksvr:mocksvr@postgres:5432/mocksvr?sslmode=disable
 
@@ -60,7 +60,6 @@ services:
       MOCKSVR_LOG_LEVEL: ${MOCKSVR_LOG_LEVEL:-info}
 
     ports:
-      - "80:80"
       - "8080:8080"
 
     healthcheck:
