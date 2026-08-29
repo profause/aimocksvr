@@ -61,7 +61,7 @@ func (g *statefulGenerator) Generate(ctx context.Context, req *Request) (*Respon
 		if resourceID == "" {
 			return g.inner.Generate(ctx, req)
 		}
-		return g.get(ctx, collection, resourceID)
+		return g.get(ctx, req.Endpoint.AccountID, collection, resourceID)
 	case http.MethodPut:
 		if resourceID == "" {
 			return g.inner.Generate(ctx, req)
@@ -76,7 +76,7 @@ func (g *statefulGenerator) Generate(ctx context.Context, req *Request) (*Respon
 		if resourceID == "" {
 			return g.inner.Generate(ctx, req)
 		}
-		return g.delete(ctx, collection, resourceID)
+		return g.delete(ctx, req.Endpoint.AccountID, collection, resourceID)
 	default:
 		return g.inner.Generate(ctx, req)
 	}
@@ -105,7 +105,7 @@ func (g *statefulGenerator) create(ctx context.Context, req *Request, collection
 		data["id"] = resourceID
 	}
 
-	if err := g.store.Create(ctx, collection, resourceID, data); err != nil {
+	if err := g.store.Create(ctx, req.Endpoint.AccountID, collection, resourceID, data); err != nil {
 		if errors.Is(err, state.ErrConflict) {
 			return &Response{Status: http.StatusConflict, Body: []byte(msgResourceConflict)}, nil
 		}
@@ -119,8 +119,8 @@ func (g *statefulGenerator) create(ctx context.Context, req *Request, collection
 	return &Response{Status: http.StatusCreated, Body: body}, nil
 }
 
-func (g *statefulGenerator) get(ctx context.Context, collection, resourceID string) (*Response, error) {
-	data, found, err := g.store.Get(ctx, collection, resourceID)
+func (g *statefulGenerator) get(ctx context.Context, accountID uuid.UUID, collection, resourceID string) (*Response, error) {
+	data, found, err := g.store.Get(ctx, accountID, collection, resourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +138,7 @@ func (g *statefulGenerator) get(ctx context.Context, collection, resourceID stri
 // the path so lookups stay consistent. When the body omits the id, the
 // existing id value (and its type) is preserved.
 func (g *statefulGenerator) put(ctx context.Context, req *Request, collection, resourceID string) (*Response, error) {
-	current, found, err := g.store.Get(ctx, collection, resourceID)
+	current, found, err := g.store.Get(ctx, req.Endpoint.AccountID, collection, resourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,7 @@ func (g *statefulGenerator) put(ctx context.Context, req *Request, collection, r
 		ensureID(data, resourceID)
 	}
 
-	if err := g.store.Update(ctx, collection, resourceID, data); err != nil {
+	if err := g.store.Update(ctx, req.Endpoint.AccountID, collection, resourceID, data); err != nil {
 		if errors.Is(err, state.ErrNotFound) {
 			return &Response{Status: http.StatusNotFound, Body: []byte(msgResourceNotFound)}, nil
 		}
@@ -177,7 +177,7 @@ func (g *statefulGenerator) put(ctx context.Context, req *Request, collection, r
 // patch deep-merges the request body into the stored resource, preserving the
 // id from the path.
 func (g *statefulGenerator) patch(ctx context.Context, req *Request, collection, resourceID string) (*Response, error) {
-	current, found, err := g.store.Get(ctx, collection, resourceID)
+	current, found, err := g.store.Get(ctx, req.Endpoint.AccountID, collection, resourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +192,7 @@ func (g *statefulGenerator) patch(ctx context.Context, req *Request, collection,
 
 	merged := mergeObjects(current, patch)
 	ensureID(merged, resourceID)
-	if err := g.store.Update(ctx, collection, resourceID, merged); err != nil {
+	if err := g.store.Update(ctx, req.Endpoint.AccountID, collection, resourceID, merged); err != nil {
 		return nil, err
 	}
 
@@ -203,8 +203,8 @@ func (g *statefulGenerator) patch(ctx context.Context, req *Request, collection,
 	return &Response{Status: http.StatusOK, Body: body}, nil
 }
 
-func (g *statefulGenerator) delete(ctx context.Context, collection, resourceID string) (*Response, error) {
-	found, err := g.store.Delete(ctx, collection, resourceID)
+func (g *statefulGenerator) delete(ctx context.Context, accountID uuid.UUID, collection, resourceID string) (*Response, error) {
+	found, err := g.store.Delete(ctx, accountID, collection, resourceID)
 	if err != nil {
 		return nil, err
 	}

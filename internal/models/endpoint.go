@@ -19,6 +19,7 @@ type Endpoint struct {
 	bun.BaseModel `bun:"table:endpoints,alias:e"`
 
 	ID            uuid.UUID `bun:",pk,type:uuid" json:"id"`
+	AccountID     uuid.UUID `bun:"account_id,type:uuid" json:"account_id"`
 	Method        string    `bun:"method,type:varchar(10),notnull" json:"method"`
 	Path          string    `bun:"path,type:varchar(255),notnull" json:"path"`
 	Description   string    `bun:"description,type:text,notnull" json:"description"`

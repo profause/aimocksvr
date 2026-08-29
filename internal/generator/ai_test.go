@@ -52,7 +52,7 @@ type fakeSchemas struct {
 	calls  int
 }
 
-func (f *fakeSchemas) LoadSchema(_ context.Context, _ uuid.UUID) (string, error) {
+func (f *fakeSchemas) LoadSchema(_ context.Context, _, _ uuid.UUID) (string, error) {
 	f.calls++
 	return f.schema, f.err
 }

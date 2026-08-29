@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useState } from 'react'
+import { StrictMode, useEffect } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -8,12 +8,9 @@ import { Toaster } from 'sonner'
 import { AppRoutes } from './routes'
 import { ThemeProvider } from './stores/theme-store'
 import { useAuthStore } from './stores/auth-store'
-import { mintToken } from './api/auth'
-import { LoadingScreen } from './components/loading-screen'
+import { whoami } from './api/auth'
 
 import '@/styles/globals.css'
-
-const API_KEY = 'sk_test_abc123xyz789'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -24,32 +21,35 @@ const queryClient = new QueryClient({
   },
 })
 
-function AuthGate({ children }: { children: React.ReactNode }) {
-  const [ready, setReady] = useState(false)
-  const { token, setToken } = useAuthStore()
+function SessionValidator() {
+  const token = useAuthStore((s) => s.token)
+  const clearToken = useAuthStore((s) => s.clearToken)
 
   useEffect(() => {
-    if (token) {
-      setReady(true)
+    if (!token) {
       return
     }
 
-    mintToken(API_KEY)
-      .then((data) => {
-        setToken(data.token, data.kind, data.name)
-        setReady(true)
-      })
-      .catch((err) => {
-        console.error('Auth failed:', err)
-        setReady(true)
-      })
-  }, [token, setToken])
+    let cancelled = false
+    whoami().catch((err: unknown) => {
+      if (cancelled) {
+        return
+      }
+      const status =
+        err && typeof err === 'object' && 'status' in err
+          ? (err as { status?: number }).status
+          : undefined
+      if (status === 401) {
+        clearToken()
+      }
+    })
 
-  if (!ready) {
-    return <LoadingScreen />
-  }
+    return () => {
+      cancelled = true
+    }
+  }, [token, clearToken])
 
-  return children
+  return null
 }
 
 function App() {
@@ -58,9 +58,8 @@ function App() {
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <ThemeProvider>
-            <AuthGate>
-              <AppRoutes />
-            </AuthGate>
+            <SessionValidator />
+            <AppRoutes />
           </ThemeProvider>
         </BrowserRouter>
         <ReactQueryDevtools initialIsOpen={false} />

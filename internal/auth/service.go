@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/config"
@@ -25,12 +26,15 @@ const (
 	KindAPIKey         = "api_key"
 	KindWorkspaceToken = "workspace_token"
 	KindJWT            = "jwt"
+	KindAccount        = "account"
 )
 
 // Identity describes an authenticated caller.
 type Identity struct {
-	Kind string `json:"kind"`
-	Name string `json:"name"`
+	Kind      string    `json:"kind"`
+	Name      string    `json:"name,omitempty"`
+	AccountID uuid.UUID `json:"account_id,omitempty"`
+	Email     string    `json:"email,omitempty"`
 }
 
 // ErrUnauthorized is returned when a credential does not match anything the
@@ -92,6 +96,17 @@ func (s *Service) Authenticate(token string) (Identity, error) {
 	}
 	if s.jwtSecret != "" {
 		if claims, err := verifyJWT(token, s.jwtSecret, s.cfg.Auth.JWTIssuer, s.cfg.Auth.JWTAudience, time.Now().UTC()); err == nil {
+			// Account JWTs carry kind "account", sub = account UUID, and the
+			// account email for whoami.
+			if claims.Kind == KindAccount {
+				accountID, err := uuid.Parse(claims.Subject)
+				if err != nil {
+					return Identity{}, ErrUnauthorized
+				}
+				return Identity{Kind: KindAccount, AccountID: accountID, Email: claims.Email}, nil
+			}
+			// Legacy JWTs minted from API keys / workspace tokens keep the
+			// credential name as the subject.
 			return Identity{Kind: KindJWT, Name: claims.Subject}, nil
 		}
 	}
@@ -99,14 +114,19 @@ func (s *Service) Authenticate(token string) (Identity, error) {
 }
 
 // MintJWT signs a short-lived JWT for the given identity. It fails when no
-// JWT secret is configured.
+// JWT secret is configured and rejects account identities outright — an
+// account token must be minted via MintAccountJWT so its subject is the
+// account UUID, never an empty name.
 func (s *Service) MintJWT(id Identity) (string, error) {
 	if s.jwtSecret == "" {
 		return "", errors.New("jwt secret not configured")
 	}
-	ttl, err := time.ParseDuration(s.cfg.Auth.JWTTTL)
+	if id.Kind == KindAccount {
+		return "", errors.New("account identities must use MintAccountJWT")
+	}
+	ttl, err := s.tokenTTL()
 	if err != nil {
-		return "", fmt.Errorf("parse jwt_ttl %q: %w", s.cfg.Auth.JWTTTL, err)
+		return "", err
 	}
 
 	now := time.Now().UTC()
@@ -118,6 +138,38 @@ func (s *Service) MintJWT(id Identity) (string, error) {
 		IssuedAt: now.Unix(),
 		Expires:  now.Add(ttl).Unix(),
 	}, s.jwtSecret)
+}
+
+// MintAccountJWT signs a short-lived account-bound JWT whose subject is the
+// account UUID and whose kind claim marks it as an account token.
+func (s *Service) MintAccountJWT(accountID uuid.UUID, email string) (string, error) {
+	if s.jwtSecret == "" {
+		return "", errors.New("jwt secret not configured")
+	}
+	ttl, err := s.tokenTTL()
+	if err != nil {
+		return "", err
+	}
+
+	now := time.Now().UTC()
+	return signJWT(jwtClaims{
+		Issuer:   s.cfg.Auth.JWTIssuer,
+		Audience: s.cfg.Auth.JWTAudience,
+		Subject:  accountID.String(),
+		Kind:     KindAccount,
+		Email:    email,
+		IssuedAt: now.Unix(),
+		Expires:  now.Add(ttl).Unix(),
+	}, s.jwtSecret)
+}
+
+// tokenTTL parses the configured JWT lifetime, shared by both minting paths.
+func (s *Service) tokenTTL() (time.Duration, error) {
+	ttl, err := time.ParseDuration(s.cfg.Auth.JWTTTL)
+	if err != nil {
+		return 0, fmt.Errorf("parse jwt_ttl %q: %w", s.cfg.Auth.JWTTTL, err)
+	}
+	return ttl, nil
 }
 
 // parseCredentials splits a comma-separated "name:secret" list into a map.

@@ -11,12 +11,13 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/api"
+	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/endpoint"
 )
 
 func newTestApp(es *fakeEndpointService) *fiber.App {
 	logger := zerolog.Nop()
-	h := NewHandler(NewService(es, &logger), &logger)
+	h := NewHandler(NewService(es, &logger), &config.Config{}, &logger)
 
 	app := fiber.New()
 	h.Register(app)

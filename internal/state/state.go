@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/google/uuid"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/driver/pgdriver"
 
@@ -29,16 +30,23 @@ var ErrConflict = errors.New("resource already exists")
 
 // Store persists mock resources. Implementations must be safe for concurrent
 // use.
+//
+// accountID is the owner of the resource. Resources are namespaced per
+// account (the underlying unique key is account_id, collection, resource_id),
+// so the same collection and id held by different accounts never collide.
 type Store interface {
-	// Create stores a new resource, returning ErrConflict when the id already
-	// exists in the collection.
-	Create(ctx context.Context, collection, resourceID string, data map[string]any) error
-	// Get returns the stored resource; found is false when it does not exist.
-	Get(ctx context.Context, collection, resourceID string) (map[string]any, bool, error)
-	// Update replaces the resource, returning ErrNotFound when it does not exist.
-	Update(ctx context.Context, collection, resourceID string, data map[string]any) error
-	// Delete removes the resource and reports whether it existed.
-	Delete(ctx context.Context, collection, resourceID string) (bool, error)
+	// Create stores a new resource owned by accountID, returning ErrConflict
+	// when the id already exists in the collection for that account.
+	Create(ctx context.Context, accountID uuid.UUID, collection, resourceID string, data map[string]any) error
+	// Get returns the resource owned by accountID; found is false when it does
+	// not exist.
+	Get(ctx context.Context, accountID uuid.UUID, collection, resourceID string) (map[string]any, bool, error)
+	// Update replaces the resource owned by accountID, returning ErrNotFound
+	// when it does not exist.
+	Update(ctx context.Context, accountID uuid.UUID, collection, resourceID string, data map[string]any) error
+	// Delete removes the resource owned by accountID and reports whether it
+	// existed.
+	Delete(ctx context.Context, accountID uuid.UUID, collection, resourceID string) (bool, error)
 }
 
 type postgresStore struct {
@@ -50,8 +58,10 @@ func NewStore(db *bun.DB) Store {
 	return &postgresStore{db: db}
 }
 
-func (s *postgresStore) Create(ctx context.Context, collection, resourceID string, data map[string]any) error {
+func (s *postgresStore) Create(ctx context.Context, accountID uuid.UUID, collection, resourceID string, data map[string]any) error {
 	resource := &models.MockResource{
+		ID:         uuid.New(),
+		AccountID:  accountID,
 		Collection: collection,
 		ResourceID: resourceID,
 		Data:       data,
@@ -65,9 +75,10 @@ func (s *postgresStore) Create(ctx context.Context, collection, resourceID strin
 	return nil
 }
 
-func (s *postgresStore) Get(ctx context.Context, collection, resourceID string) (map[string]any, bool, error) {
+func (s *postgresStore) Get(ctx context.Context, accountID uuid.UUID, collection, resourceID string) (map[string]any, bool, error) {
 	var resource models.MockResource
 	err := s.db.NewSelect().Model(&resource).
+		Where("account_id = ?", accountID).
 		Where("collection = ?", collection).
 		Where("resource_id = ?", resourceID).
 		Scan(ctx)
@@ -80,11 +91,12 @@ func (s *postgresStore) Get(ctx context.Context, collection, resourceID string) 
 	return resource.Data, true, nil
 }
 
-func (s *postgresStore) Update(ctx context.Context, collection, resourceID string, data map[string]any) error {
+func (s *postgresStore) Update(ctx context.Context, accountID uuid.UUID, collection, resourceID string, data map[string]any) error {
 	res, err := s.db.NewUpdate().
 		Model((*models.MockResource)(nil)).
 		Set("data = ?", data).
 		Set("updated_at = now()").
+		Where("account_id = ?", accountID).
 		Where("collection = ?", collection).
 		Where("resource_id = ?", resourceID).
 		Exec(ctx)
@@ -101,9 +113,10 @@ func (s *postgresStore) Update(ctx context.Context, collection, resourceID strin
 	return nil
 }
 
-func (s *postgresStore) Delete(ctx context.Context, collection, resourceID string) (bool, error) {
+func (s *postgresStore) Delete(ctx context.Context, accountID uuid.UUID, collection, resourceID string) (bool, error) {
 	res, err := s.db.NewDelete().
 		Model((*models.MockResource)(nil)).
+		Where("account_id = ?", accountID).
 		Where("collection = ?", collection).
 		Where("resource_id = ?", resourceID).
 		Exec(ctx)

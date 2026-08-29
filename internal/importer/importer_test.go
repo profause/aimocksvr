@@ -20,46 +20,46 @@ type fakeEndpointService struct {
 	err    error
 }
 
-func (f *fakeEndpointService) Import(_ context.Context, items []endpoint.ImportItem) (endpoint.ImportResult, error) {
+func (f *fakeEndpointService) Import(_ context.Context, _ uuid.UUID, items []endpoint.ImportItem) (endpoint.ImportResult, error) {
 	f.items = items
 	return f.result, f.err
 }
 
-func (f *fakeEndpointService) Create(context.Context, endpoint.CreateEndpointParams) (*models.Endpoint, error) {
+func (f *fakeEndpointService) Create(context.Context, uuid.UUID, endpoint.CreateEndpointParams) (*models.Endpoint, error) {
 	return nil, nil
 }
 
-func (f *fakeEndpointService) Update(context.Context, uuid.UUID, endpoint.UpdateEndpointParams) (*models.Endpoint, error) {
+func (f *fakeEndpointService) Update(context.Context, uuid.UUID, uuid.UUID, endpoint.UpdateEndpointParams) (*models.Endpoint, error) {
 	return nil, nil
 }
 
-func (f *fakeEndpointService) Delete(context.Context, uuid.UUID) error { return nil }
+func (f *fakeEndpointService) Delete(context.Context, uuid.UUID, uuid.UUID) error { return nil }
 
-func (f *fakeEndpointService) Get(context.Context, uuid.UUID) (*models.Endpoint, error) {
+func (f *fakeEndpointService) Get(context.Context, uuid.UUID, uuid.UUID) (*models.Endpoint, error) {
 	return nil, nil
 }
 
-func (f *fakeEndpointService) List(context.Context, endpoint.ListParams) ([]models.Endpoint, int, error) {
+func (f *fakeEndpointService) List(context.Context, uuid.UUID, endpoint.ListParams) ([]models.Endpoint, int, error) {
 	return nil, 0, nil
 }
 
-func (f *fakeEndpointService) ListVersions(context.Context, uuid.UUID) ([]models.EndpointVersion, error) {
+func (f *fakeEndpointService) ListVersions(context.Context, uuid.UUID, uuid.UUID) ([]models.EndpointVersion, error) {
 	return nil, nil
 }
 
-func (f *fakeEndpointService) ListHistory(context.Context, uuid.UUID) ([]models.RequestHistory, error) {
+func (f *fakeEndpointService) ListHistory(context.Context, uuid.UUID, uuid.UUID) ([]models.RequestHistory, error) {
 	return nil, nil
 }
 
-func (f *fakeEndpointService) Rollback(context.Context, uuid.UUID, int) (*models.Endpoint, error) {
+func (f *fakeEndpointService) Rollback(context.Context, uuid.UUID, uuid.UUID, int) (*models.Endpoint, error) {
 	return nil, nil
 }
 
-func (f *fakeEndpointService) Diff(context.Context, uuid.UUID, int) ([]endpoint.FieldChange, error) {
+func (f *fakeEndpointService) Diff(context.Context, uuid.UUID, uuid.UUID, int) ([]endpoint.FieldChange, error) {
 	return nil, nil
 }
 
-func (f *fakeEndpointService) Stats(context.Context) (*endpoint.DashboardStats, error) {
+func (f *fakeEndpointService) Stats(context.Context, uuid.UUID) (*endpoint.DashboardStats, error) {
 	return nil, nil
 }
 
@@ -67,12 +67,11 @@ func newTestService(f *fakeEndpointService) *Service {
 	logger := zerolog.Nop()
 	return NewService(f, &logger)
 }
-
 func TestServiceImportMapsSpecsToItems(t *testing.T) {
 	es := &fakeEndpointService{result: endpoint.ImportResult{Created: 3}}
 	svc := newTestService(es)
 
-	res, err := svc.Import(context.Background(), []byte(v3Spec))
+	res, err := svc.Import(context.Background(), models.LegacyAccountID, []byte(v3Spec))
 	if err != nil {
 		t.Fatalf("Import returned error: %v", err)
 	}
@@ -106,7 +105,7 @@ func TestServiceImportSkipsEmptyDoc(t *testing.T) {
 	es := &fakeEndpointService{}
 	svc := newTestService(es)
 
-	_, err := svc.Import(context.Background(), []byte(""))
+	_, err := svc.Import(context.Background(), models.LegacyAccountID, []byte(""))
 	if err == nil {
 		t.Fatal("expected error for empty document")
 	}
@@ -120,7 +119,7 @@ func TestServiceImportPropagatesEndpointError(t *testing.T) {
 	es := &fakeEndpointService{err: boom}
 	svc := newTestService(es)
 
-	_, err := svc.Import(context.Background(), []byte(v3Spec))
+	_, err := svc.Import(context.Background(), models.LegacyAccountID, []byte(v3Spec))
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected stored error, got %v", err)
 	}
@@ -130,7 +129,7 @@ func TestServiceImportPostman(t *testing.T) {
 	es := &fakeEndpointService{result: endpoint.ImportResult{Created: 2}}
 	svc := newTestService(es)
 
-	res, err := svc.ImportPostman(context.Background(), []byte(postmanCollection))
+	res, err := svc.ImportPostman(context.Background(), models.LegacyAccountID, []byte(postmanCollection))
 	if err != nil {
 		t.Fatalf("ImportPostman returned error: %v", err)
 	}

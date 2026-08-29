@@ -15,6 +15,7 @@ type MockResource struct {
 	bun.BaseModel `bun:"table:mock_resources,alias:r"`
 
 	ID         uuid.UUID      `bun:",pk,type:uuid" json:"id"`
+	AccountID  uuid.UUID      `bun:"account_id,type:uuid" json:"account_id"`
 	Collection string         `bun:"collection,type:varchar(255),notnull" json:"collection"`
 	ResourceID string         `bun:"resource_id,type:varchar(255),notnull" json:"resource_id"`
 	Data       map[string]any `bun:"data,type:jsonb,notnull" json:"data"`

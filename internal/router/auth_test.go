@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 
+	"github.com/profause/aimocksvr/internal/account"
 	"github.com/profause/aimocksvr/internal/ai"
 	"github.com/profause/aimocksvr/internal/auth"
 	"github.com/profause/aimocksvr/internal/cache"
@@ -21,6 +23,40 @@ import (
 	"github.com/profause/aimocksvr/internal/validator"
 )
 
+// inMemoryAccountRepo satisfies account.Repository without a database for the
+// full-router tests, which only exercise the routing surface.
+type inMemoryAccountRepo struct {
+	accounts map[string]*models.Account
+}
+
+func (r *inMemoryAccountRepo) Create(_ context.Context, a *models.Account) error {
+	if _, ok := r.accounts[a.Email]; ok {
+		return account.ErrConflict
+	}
+	r.accounts[a.Email] = a
+	return nil
+}
+
+func (r *inMemoryAccountRepo) FindByEmail(_ context.Context, email string) (*models.Account, error) {
+	if a, ok := r.accounts[email]; ok {
+		return a, nil
+	}
+	return nil, account.ErrNotFound
+}
+
+func newAccountHandler(logger *zerolog.Logger) *account.Handler {
+	authCfg := &config.Config{Auth: config.Auth{
+		Enabled:     true,
+		JWTSecret:   "test-secret",
+		JWTIssuer:   "mocksvr",
+		JWTAudience: "mocksvr",
+		JWTTTL:      "1h",
+	}}
+	authSvc := auth.NewService(authCfg, logger)
+	repo := &inMemoryAccountRepo{accounts: make(map[string]*models.Account)}
+	return account.NewHandler(account.NewService(repo, authSvc), logger)
+}
+
 // newAuthApp builds the full router with auth enabled and in-memory
 // persistence, mirroring the production wiring.
 func newAuthApp(t *testing.T) *fiber.App {
@@ -29,9 +65,6 @@ func newAuthApp(t *testing.T) *fiber.App {
 	repo := newImportRepo()
 	logger := zerolog.Nop()
 	esvc := endpoint.NewService(repo, cache.Noop{}, ai.Noop{}, validator.New(), &logger)
-	h := endpoint.NewHandler(esvc, &logger)
-	imp := importer.NewHandler(importer.NewService(esvc, &logger), &logger)
-
 	cfg := &config.Config{}
 	cfg.App.Name = "aimocksvr-test"
 	cfg.Auth.Enabled = true
@@ -42,11 +75,14 @@ func newAuthApp(t *testing.T) *fiber.App {
 	cfg.Auth.APIKeys = "dev:sk_test_123"
 	cfg.Auth.WorkspaceTokens = "acme:tok_acme_456"
 
+	h := endpoint.NewHandler(esvc, cfg, &logger)
+	imp := importer.NewHandler(importer.NewService(esvc, &logger), cfg, &logger)
+
 	gen := generator.NewFaker(importSchemaLoader{repo: repo}, generator.NewStatic(), &logger)
 	dyn := NewDynamicHandler(repo, gen, validator.New(), cfg, &logger)
 	ah := auth.NewHandler(cfg, auth.NewService(cfg, &logger), &logger)
 
-	return New(cfg, &logger, h, imp, dyn, ah)
+	return New(cfg, &logger, h, imp, dyn, ah, newAccountHandler(&logger))
 }
 
 func TestAuthenticationViaRegistryAPI(t *testing.T) {
@@ -77,25 +113,75 @@ func TestAuthenticationViaRegistryAPI(t *testing.T) {
 		t.Fatalf("expected 401 without credentials, got %d", resp.StatusCode)
 	}
 
-	// Create a private mock endpoint using an API key.
+	// Register an account so we get an account-scoped credential; control
+	// plane writes are owned by an account, so API keys and workspace tokens
+	// (which carry no account id) cannot create endpoints.
+	regReq := httptest.NewRequest("POST", "/api/v1/auth/register", strings.NewReader(`{
+		"email": "creator@example.com",
+		"password": "correct-horse-battery-staple"
+	}`))
+	regReq.Header.Set("Content-Type", "application/json")
+	resp, err = app.Test(regReq)
+	if err != nil {
+		t.Fatalf("account registration failed: %v", err)
+	}
+	regBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201 on registration, got %d (body %q)", resp.StatusCode, regBody)
+	}
+	var regEnvelope struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(regBody, &regEnvelope); err != nil {
+		t.Fatalf("decode registration response: %v", err)
+	}
+	accountJWT := regEnvelope.Data.Token
+	if accountJWT == "" {
+		t.Fatal("expected an account token from registration")
+	}
+
+	// Create a private mock endpoint using the account-scoped JWT.
 	req := httptest.NewRequest("POST", "/api/v1/endpoints", strings.NewReader(`{
 		"method": "get",
 		"path": "/secret",
 		"prompt": "a private endpoint",
 		"public": false
 	}`))
-	req.Header.Set("X-API-Key", "sk_test_123")
+	req.Header.Set("Authorization", "Bearer "+accountJWT)
 	resp, err = app.Test(req)
 	if err != nil {
-		t.Fatalf("create with API key failed: %v", err)
+		t.Fatalf("create with account JWT failed: %v", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != fiber.StatusCreated {
-		t.Fatalf("expected 201 with API key, got %d", resp.StatusCode)
+		t.Fatalf("expected 201 with account JWT, got %d", resp.StatusCode)
+	}
+
+	// API-key and workspace-token identities carry no account and therefore
+	// cannot create endpoints even though they are valid credentials.
+	for name, header := range map[string]string{"X-API-Key": "sk_test_123", "X-Workspace-Token": "tok_acme_456"} {
+		noreq := httptest.NewRequest("POST", "/api/v1/endpoints", strings.NewReader(`{
+			"method": "get",
+			"path": "/no-owner",
+			"prompt": "cannot be owned",
+			"public": false
+		}`))
+		noreq.Header.Set(header, "v")
+		resp, err = app.Test(noreq)
+		if err != nil {
+			t.Fatalf("create with %s failed: %v", name, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != fiber.StatusUnauthorized {
+			t.Fatalf("expected 401 creating with %s (no account), got %d", name, resp.StatusCode)
+		}
 	}
 
 	// The private endpoint rejects anonymous requests but accepts every
-	// supported credential kind.
+	// supported credential kind for serving.
 	anonymous := httptest.NewRequest("GET", "/secret", nil)
 	resp, err = app.Test(anonymous)
 	if err != nil {
@@ -185,7 +271,7 @@ func TestAuthenticationViaRegistryAPI(t *testing.T) {
 		"path": "/open",
 		"prompt": "a public endpoint"
 	}`))
-	req.Header.Set("X-API-Key", "sk_test_123")
+	req.Header.Set("Authorization", "Bearer "+accountJWT)
 	resp, err = app.Test(req)
 	if err != nil {
 		t.Fatalf("create public endpoint failed: %v", err)
