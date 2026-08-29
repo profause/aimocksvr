@@ -33,12 +33,15 @@ export function EndpointsPage() {
   })
 
   const totalPages = data ? Math.ceil(data.total / limit) : 0
-  const filteredEndpoints = data?.endpoints.filter(
-    (e) =>
-      e.path.toLowerCase().includes(search.toLowerCase()) ||
-      e.method.toLowerCase().includes(search.toLowerCase()) ||
-      e.description?.toLowerCase().includes(search.toLowerCase())
-  ) ?? []
+  const filteredEndpoints =
+    Array.isArray(data?.endpoints)
+      ? data!.endpoints.filter(
+          (e) =>
+            e.path.toLowerCase().includes(search.toLowerCase()) ||
+            e.method.toLowerCase().includes(search.toLowerCase()) ||
+            e.description?.toLowerCase().includes(search.toLowerCase())
+        )
+      : []
 
   if (selectedId) {
     return (
