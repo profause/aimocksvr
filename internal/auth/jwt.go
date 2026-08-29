@@ -24,6 +24,7 @@ type jwtClaims struct {
 	Audience string `json:"aud"`
 	Subject  string `json:"sub"`
 	Kind     string `json:"kind,omitempty"`
+	Email    string `json:"email,omitempty"`
 	IssuedAt int64  `json:"iat"`
 	Expires  int64  `json:"exp"`
 }

@@ -10,8 +10,9 @@ run:
 test:
 	go test ./...
 
+# Run database-backed repository tests serially: they share one test database.
 test-integration:
-	MOCKSVR_TEST_DATABASE_URL=$(MOCKSVR_TEST_DATABASE_URL) go test ./... -run Repository -v
+	MOCKSVR_TEST_DATABASE_URL=$(MOCKSVR_TEST_DATABASE_URL) go test -p 1 ./... -run Repository -v
 
 vet:
 	go vet ./...

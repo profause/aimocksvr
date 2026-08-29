@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/config"
@@ -150,6 +151,86 @@ func TestServiceAuthenticatesJWT(t *testing.T) {
 	}
 	if id.Kind != KindJWT || id.Name != "dev" {
 		t.Errorf("unexpected identity: %+v", id)
+	}
+}
+
+func TestServiceAuthenticatesAccountJWT(t *testing.T) {
+	svc := newTestService("", "", "secret", true)
+	acctID := uuid.New()
+
+	token, err := svc.MintAccountJWT(acctID, "user@example.com")
+	if err != nil {
+		t.Fatalf("MintAccountJWT failed: %v", err)
+	}
+
+	id, err := svc.Authenticate(token)
+	if err != nil {
+		t.Fatalf("Authenticate failed: %v", err)
+	}
+	if id.Kind != KindAccount {
+		t.Errorf("expected kind %q, got %q", KindAccount, id.Kind)
+	}
+	if id.AccountID != acctID {
+		t.Errorf("expected account id %s, got %s", acctID, id.AccountID)
+	}
+	if id.Name != "" {
+		t.Errorf("expected no name on an account identity, got %q", id.Name)
+	}
+	if id.Email != "user@example.com" {
+		t.Errorf("expected email claim to round-trip, got %q", id.Email)
+	}
+}
+
+func TestServiceMintJWTRejectsAccountIdentity(t *testing.T) {
+	svc := newTestService("", "", "secret", true)
+
+	if _, err := svc.MintJWT(Identity{Kind: KindAccount, AccountID: uuid.New(), Email: "user@example.com"}); err == nil {
+		t.Error("expected MintJWT to reject an account identity")
+	}
+}
+
+func TestServiceLegacyJWTHasNoAccount(t *testing.T) {
+	svc := newTestService("dev:sk_test_123", "", "secret", true)
+
+	token, err := svc.MintJWT(Identity{Kind: KindAPIKey, Name: "dev"})
+	if err != nil {
+		t.Fatalf("MintJWT failed: %v", err)
+	}
+	id, err := svc.Authenticate(token)
+	if err != nil {
+		t.Fatalf("Authenticate failed: %v", err)
+	}
+	if id.Kind != KindJWT || id.Name != "dev" || id.AccountID != uuid.Nil {
+		t.Errorf("legacy JWT identity changed: %+v", id)
+	}
+}
+
+func TestServiceAccountJWTRequiresUUIDSubject(t *testing.T) {
+	svc := newTestService("", "", "secret", true)
+
+	now := time.Now().UTC()
+	token, err := signJWT(jwtClaims{
+		Issuer:   "mocksvr",
+		Audience: "mocksvr",
+		Subject:  "not-a-uuid",
+		Kind:     KindAccount,
+		IssuedAt: now.Unix(),
+		Expires:  now.Add(time.Hour).Unix(),
+	}, "secret")
+	if err != nil {
+		t.Fatalf("signJWT failed: %v", err)
+	}
+
+	if _, err := svc.Authenticate(token); !errors.Is(err, ErrUnauthorized) {
+		t.Errorf("expected ErrUnauthorized for non-UUID account subject, got %v", err)
+	}
+}
+
+func TestServiceMintAccountJWTWithoutSecret(t *testing.T) {
+	svc := newTestService("", "", "", true)
+
+	if _, err := svc.MintAccountJWT(uuid.New(), "user@example.com"); err == nil {
+		t.Error("expected MintAccountJWT to fail without a secret")
 	}
 }
 

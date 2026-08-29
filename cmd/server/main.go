@@ -13,6 +13,7 @@ import (
 	"github.com/uptrace/bun"
 	"go.uber.org/fx"
 
+	"github.com/profause/aimocksvr/internal/account"
 	"github.com/profause/aimocksvr/internal/ai"
 	"github.com/profause/aimocksvr/internal/auth"
 	"github.com/profause/aimocksvr/internal/cache"
@@ -39,6 +40,9 @@ func main() {
 			importer.NewHandler,
 			auth.NewService,
 			auth.NewHandler,
+			account.NewRepository,
+			account.NewService,
+			account.NewHandler,
 			provideGenerator,
 			endpointSchemaLoader,
 			cache.New,

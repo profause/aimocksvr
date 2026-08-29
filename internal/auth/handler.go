@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/api"
@@ -38,7 +39,7 @@ func (h *Handler) Middleware() fiber.Handler {
 		}
 
 		path := c.Path()
-		if path == "/health" || path == "/api/v1/auth/token" {
+		if isPublicPath(path) {
 			return c.Next()
 		}
 
@@ -54,6 +55,17 @@ func (h *Handler) Middleware() fiber.Handler {
 		}
 		return c.Next()
 	}
+}
+
+// isPublicPath reports whether a control-plane route never requires
+// credentials. The token-minting route, account registration and login are the
+// public entry points of auth.
+func isPublicPath(path string) bool {
+	switch path {
+	case "/health", "/api/v1/auth/token", "/api/v1/auth/register", "/api/v1/auth/login":
+		return true
+	}
+	return false
 }
 
 // Register wires the auth routes onto the given router group.
@@ -97,13 +109,25 @@ func (h *Handler) Token(c fiber.Ctx) error {
 	return api.OK(c, map[string]any{"token": t, "kind": id.Kind, "name": id.Name})
 }
 
-// Whoami reports the authenticated identity, or 401 when none is present.
+// Whoami reports the authenticated identity, or 401 when none is present. The
+// response is built as an explicit map so a zero AccountID on legacy JWTs is
+// omitted — uuid.UUID is a [16]byte array, so omitempty cannot hide it.
 func (h *Handler) Whoami(c fiber.Ctx) error {
 	id, ok := c.Locals(IdentityKey).(Identity)
 	if !ok {
 		return api.Fail(c, fiber.StatusUnauthorized, api.CodeUnauthorized, "authentication required")
 	}
-	return api.OK(c, id)
+	out := map[string]any{"kind": id.Kind}
+	if id.Name != "" {
+		out["name"] = id.Name
+	}
+	if id.AccountID != uuid.Nil {
+		out["account_id"] = id.AccountID
+	}
+	if id.Email != "" {
+		out["email"] = id.Email
+	}
+	return api.OK(c, out)
 }
 
 // extractToken reads a credential from the standard auth headers, preferring

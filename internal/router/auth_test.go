@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 
+	"github.com/profause/aimocksvr/internal/account"
 	"github.com/profause/aimocksvr/internal/ai"
 	"github.com/profause/aimocksvr/internal/auth"
 	"github.com/profause/aimocksvr/internal/cache"
@@ -20,6 +22,40 @@ import (
 	"github.com/profause/aimocksvr/internal/models"
 	"github.com/profause/aimocksvr/internal/validator"
 )
+
+// inMemoryAccountRepo satisfies account.Repository without a database for the
+// full-router tests, which only exercise the routing surface.
+type inMemoryAccountRepo struct {
+	accounts map[string]*models.Account
+}
+
+func (r *inMemoryAccountRepo) Create(_ context.Context, a *models.Account) error {
+	if _, ok := r.accounts[a.Email]; ok {
+		return account.ErrConflict
+	}
+	r.accounts[a.Email] = a
+	return nil
+}
+
+func (r *inMemoryAccountRepo) FindByEmail(_ context.Context, email string) (*models.Account, error) {
+	if a, ok := r.accounts[email]; ok {
+		return a, nil
+	}
+	return nil, account.ErrNotFound
+}
+
+func newAccountHandler(logger *zerolog.Logger) *account.Handler {
+	authCfg := &config.Config{Auth: config.Auth{
+		Enabled:     true,
+		JWTSecret:   "test-secret",
+		JWTIssuer:   "mocksvr",
+		JWTAudience: "mocksvr",
+		JWTTTL:      "1h",
+	}}
+	authSvc := auth.NewService(authCfg, logger)
+	repo := &inMemoryAccountRepo{accounts: make(map[string]*models.Account)}
+	return account.NewHandler(account.NewService(repo, authSvc), logger)
+}
 
 // newAuthApp builds the full router with auth enabled and in-memory
 // persistence, mirroring the production wiring.
@@ -46,7 +82,7 @@ func newAuthApp(t *testing.T) *fiber.App {
 	dyn := NewDynamicHandler(repo, gen, validator.New(), cfg, &logger)
 	ah := auth.NewHandler(cfg, auth.NewService(cfg, &logger), &logger)
 
-	return New(cfg, &logger, h, imp, dyn, ah)
+	return New(cfg, &logger, h, imp, dyn, ah, newAccountHandler(&logger))
 }
 
 func TestAuthenticationViaRegistryAPI(t *testing.T) {

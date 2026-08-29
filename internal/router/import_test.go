@@ -201,7 +201,7 @@ func newImportApp(t *testing.T) *fiber.App {
 	dyn := NewDynamicHandler(repo, gen, validator.New(), cfg, &logger)
 	ah := auth.NewHandler(cfg, auth.NewService(cfg, &logger), &logger)
 
-	return New(cfg, &logger, h, imp, dyn, ah)
+	return New(cfg, &logger, h, imp, dyn, ah, newAccountHandler(&logger))
 }
 
 const importSpec = `{
