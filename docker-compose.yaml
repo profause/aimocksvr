@@ -1,30 +1,4 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: mocksvr-postgres
-    environment:
-      POSTGRES_USER: mocksvr
-      POSTGRES_PASSWORD: mocksvr
-      POSTGRES_DB: mocksvr
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mocksvr -d mocksvr"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    container_name: mocksvr-redis
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   app:
     build:
       context: .
@@ -69,7 +43,3 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-
-volumes:
-  postgres_data:
-  redis_data:
