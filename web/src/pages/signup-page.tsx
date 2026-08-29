@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 
 import { AuthLayout } from '@/layouts/auth-layout'
+import { PasswordInput } from '@/components/password-input'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -90,9 +91,8 @@ export function SignupPage() {
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor="password">Password</Label>
-          <Input
+          <PasswordInput
             id="password"
-            type="password"
             placeholder="At least 8 characters"
             autoComplete="new-password"
             {...form.register('password')}
@@ -105,9 +105,8 @@ export function SignupPage() {
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor="confirmPassword">Confirm password</Label>
-          <Input
+          <PasswordInput
             id="confirmPassword"
-            type="password"
             autoComplete="new-password"
             {...form.register('confirmPassword')}
           />
