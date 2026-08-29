@@ -3,6 +3,7 @@ package importer
 import (
 	"context"
 
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/endpoint"
@@ -29,29 +30,31 @@ type Result struct {
 }
 
 // Import parses data as an OpenAPI document and registers every operation as
-// an endpoint. Operations whose method+path already exist are skipped. The
-// parsed document is validated before anything is written.
-func (s *Service) Import(ctx context.Context, data []byte) (Result, error) {
+// an endpoint owned by owner. Operations whose method+path already exist for
+// that owner are skipped. The parsed document is validated before anything is
+// written.
+func (s *Service) Import(ctx context.Context, owner uuid.UUID, data []byte) (Result, error) {
 	specs, err := Parse(data)
 	if err != nil {
 		return Result{}, err
 	}
-	return s.importSpecs(ctx, specs)
+	return s.importSpecs(ctx, owner, specs)
 }
 
 // ImportPostman parses data as a Postman Collection and registers every
-// request as an endpoint, reusing the same idempotent write path as Import.
-func (s *Service) ImportPostman(ctx context.Context, data []byte) (Result, error) {
+// request as an endpoint owned by owner, reusing the same idempotent write
+// path as Import.
+func (s *Service) ImportPostman(ctx context.Context, owner uuid.UUID, data []byte) (Result, error) {
 	specs, err := ParsePostman(data)
 	if err != nil {
 		return Result{}, err
 	}
-	return s.importSpecs(ctx, specs)
+	return s.importSpecs(ctx, owner, specs)
 }
 
 // importSpecs converts parsed endpoints into import items, writes them to the
 // registry and reports the outcome.
-func (s *Service) importSpecs(ctx context.Context, specs []EndpointSpec) (Result, error) {
+func (s *Service) importSpecs(ctx context.Context, owner uuid.UUID, specs []EndpointSpec) (Result, error) {
 	items := make([]endpoint.ImportItem, 0, len(specs))
 	for _, spec := range specs {
 		items = append(items, endpoint.ImportItem{
@@ -64,7 +67,7 @@ func (s *Service) importSpecs(ctx context.Context, specs []EndpointSpec) (Result
 		})
 	}
 
-	res, err := s.endpoints.Import(ctx, items)
+	res, err := s.endpoints.Import(ctx, owner, items)
 	if err != nil {
 		s.log.Error().Err(err).Msg("import failed")
 		return Result{}, err

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/api"
@@ -140,6 +141,95 @@ func TestMiddlewarePassesMockPathsThrough(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode == fiber.StatusUnauthorized {
 		t.Errorf("middleware must not 401 mock paths directly")
+	}
+}
+
+func TestMiddlewareAllowsAuthEntrypoints(t *testing.T) {
+	app := newTestApp(testCfg(true))
+
+	// Registration and login are how callers obtain credentials; they must not
+	// be gated by the middleware. The auth test app does not register these
+	// routes, so anything other than a 401 proves the middleware passed.
+	for _, p := range []string{"/api/v1/auth/register", "/api/v1/auth/login"} {
+		resp, err := app.Test(httptest.NewRequest("POST", p, nil))
+		if err != nil {
+			t.Fatalf("%s failed: %v", p, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode == fiber.StatusUnauthorized {
+			t.Errorf("%s must not require credentials", p)
+		}
+	}
+}
+
+func TestWhoamiLegacyOmitsAccount(t *testing.T) {
+	app := newTestApp(testCfg(true))
+
+	// A legacy API-key identity must not leak a zero account_id or email.
+	req := httptest.NewRequest("GET", "/api/v1/auth/whoami", nil)
+	req.Header.Set("X-API-Key", "sk_test_123")
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("whoami failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d (body %q)", resp.StatusCode, body)
+	}
+	var got struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode whoami: %v", err)
+	}
+	if got.Data["kind"] != KindAPIKey || got.Data["name"] != "dev" {
+		t.Errorf("unexpected identity: %+v", got.Data)
+	}
+	if _, hasACCT := got.Data["account_id"]; hasACCT {
+		t.Errorf("legacy whoami must not include account_id: %+v", got.Data)
+	}
+	if _, hasEmail := got.Data["email"]; hasEmail {
+		t.Errorf("legacy whoami must not include email: %+v", got.Data)
+	}
+}
+
+func TestWhoamiAccountIncludesAccount(t *testing.T) {
+	app := newTestApp(testCfg(true))
+	acctID := uuid.New()
+
+	// Mint an account JWT directly via the service backing the app.
+	svc := newTestService("dev:sk_test_123", "acme:tok_acme_456", "secret", true)
+	tok, err := svc.MintAccountJWT(acctID, "user@example.com")
+	if err != nil {
+		t.Fatalf("MintAccountJWT failed: %v", err)
+	}
+
+	req := httptest.NewRequest("GET", "/api/v1/auth/whoami", nil)
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatalf("whoami failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200, got %d (body %q)", resp.StatusCode, body)
+	}
+	var got struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("decode whoami: %v", err)
+	}
+	if got.Data["kind"] != KindAccount {
+		t.Errorf("expected kind %q, got %v", KindAccount, got.Data["kind"])
+	}
+	if got.Data["account_id"] != acctID.String() {
+		t.Errorf("expected account_id %s, got %v", acctID.String(), got.Data["account_id"])
+	}
+	if got.Data["email"] != "user@example.com" {
+		t.Errorf("expected email user@example.com, got %v", got.Data["email"])
 	}
 }
 

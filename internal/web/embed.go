@@ -23,6 +23,8 @@ var distFS embed.FS
 // mock endpoints at arbitrary paths.
 var spaRoutes = map[string]bool{
 	"/":          true,
+	"/signup":    true,
+	"/login":     true,
 	"/endpoints": true,
 	"/logs":      true,
 	"/scenarios": true,

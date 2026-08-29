@@ -13,6 +13,7 @@ import (
 	"github.com/uptrace/bun"
 	"go.uber.org/fx"
 
+	"github.com/profause/aimocksvr/internal/account"
 	"github.com/profause/aimocksvr/internal/ai"
 	"github.com/profause/aimocksvr/internal/auth"
 	"github.com/profause/aimocksvr/internal/cache"
@@ -39,6 +40,9 @@ func main() {
 			importer.NewHandler,
 			auth.NewService,
 			auth.NewHandler,
+			account.NewRepository,
+			account.NewService,
+			account.NewHandler,
 			provideGenerator,
 			endpointSchemaLoader,
 			cache.New,
@@ -76,8 +80,8 @@ type schemaLoader struct {
 	repo endpoint.Repository
 }
 
-func (s schemaLoader) LoadSchema(ctx context.Context, endpointID uuid.UUID) (string, error) {
-	versions, err := s.repo.ListVersions(ctx, endpointID)
+func (s schemaLoader) LoadSchema(ctx context.Context, accountID, endpointID uuid.UUID) (string, error) {
+	versions, err := s.repo.ListVersions(ctx, accountID, endpointID)
 	if err != nil {
 		return "", err
 	}

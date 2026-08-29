@@ -31,27 +31,33 @@ func mapConflict(err error) error {
 }
 
 // Repository persists endpoints and their versions and request history.
+//
+// Ownership is enforced on every control-plane read and write: callers pass
+// the owning account id and rows outside it are invisible (reads return
+// ErrNotFound / empty results). accountID uuid.Nil is treated as matching only
+// NULL owners, so the account service always passes a concrete owner (real or
+// the legacy account).
 type Repository interface {
 	// WithTx runs fn inside a database transaction. Implementations must bind
 	// the transaction to ctx so nested repository calls participate in it.
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
 
 	Create(ctx context.Context, e *models.Endpoint) error
-	Update(ctx context.Context, e *models.Endpoint) error
-	Delete(ctx context.Context, id uuid.UUID) error
-	FindByID(ctx context.Context, id uuid.UUID) (*models.Endpoint, error)
-	List(ctx context.Context, p ListParams) ([]models.Endpoint, int, error)
+	Update(ctx context.Context, accountID uuid.UUID, e *models.Endpoint) error
+	Delete(ctx context.Context, accountID, id uuid.UUID) error
+	FindByID(ctx context.Context, accountID, id uuid.UUID) (*models.Endpoint, error)
+	List(ctx context.Context, accountID uuid.UUID, p ListParams) ([]models.Endpoint, int, error)
 	ListActiveByMethod(ctx context.Context, method string) ([]models.Endpoint, error)
 
 	CreateVersion(ctx context.Context, v *models.EndpointVersion) error
-	ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error)
-	ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error)
+	ListVersions(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.EndpointVersion, error)
+	ListHistory(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.RequestHistory, error)
 	CreateHistory(ctx context.Context, h *models.RequestHistory) error
 
-	CountEndpoints(ctx context.Context) (int, error)
-	CountRecentRequests(ctx context.Context, since time.Time) (int, error)
-	AvgLatency(ctx context.Context, since time.Time) (float64, error)
-	ErrorRate(ctx context.Context, since time.Time) (float64, error)
+	CountEndpoints(ctx context.Context, accountID uuid.UUID) (int, error)
+	CountRecentRequests(ctx context.Context, accountID uuid.UUID, since time.Time) (int, error)
+	AvgLatency(ctx context.Context, accountID uuid.UUID, since time.Time) (float64, error)
+	ErrorRate(ctx context.Context, accountID uuid.UUID, since time.Time) (float64, error)
 }
 
 type repository struct {
@@ -70,14 +76,21 @@ func (r *repository) WithTx(ctx context.Context, fn func(ctx context.Context) er
 }
 
 func (r *repository) Create(ctx context.Context, e *models.Endpoint) error {
-	if _, err := r.db.NewInsert().Model(e).Returning("*").Exec(ctx); err != nil {
+	// The generated columns (created_at/updated_at) are not scanned back; the
+	// caller owns the struct it passed in. No Returning("*") so the model does
+	// not need to round-trip every column (account_id included).
+	if _, err := r.db.NewInsert().Model(e).Exec(ctx); err != nil {
 		return fmt.Errorf("insert endpoint: %w", mapConflict(err))
 	}
 	return nil
 }
 
-func (r *repository) Update(ctx context.Context, e *models.Endpoint) error {
-	res, err := r.db.NewUpdate().Model(e).WherePK().Returning("*").Exec(ctx)
+func (r *repository) Update(ctx context.Context, accountID uuid.UUID, e *models.Endpoint) error {
+	res, err := r.db.NewUpdate().
+		Model(e).
+		WherePK().
+		Where("account_id = ?", accountID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("update endpoint: %w", mapConflict(err))
 	}
@@ -91,8 +104,12 @@ func (r *repository) Update(ctx context.Context, e *models.Endpoint) error {
 	return nil
 }
 
-func (r *repository) Delete(ctx context.Context, id uuid.UUID) error {
-	res, err := r.db.NewDelete().Model((*models.Endpoint)(nil)).Where("id = ?", id).Exec(ctx)
+func (r *repository) Delete(ctx context.Context, accountID, id uuid.UUID) error {
+	res, err := r.db.NewDelete().
+		Model((*models.Endpoint)(nil)).
+		Where("id = ?", id).
+		Where("account_id = ?", accountID).
+		Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("delete endpoint: %w", err)
 	}
@@ -106,9 +123,13 @@ func (r *repository) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-func (r *repository) FindByID(ctx context.Context, id uuid.UUID) (*models.Endpoint, error) {
+func (r *repository) FindByID(ctx context.Context, accountID, id uuid.UUID) (*models.Endpoint, error) {
 	e := new(models.Endpoint)
-	if err := r.db.NewSelect().Model(e).Where("id = ?", id).Scan(ctx); err != nil {
+	if err := r.db.NewSelect().
+		Model(e).
+		Where("id = ?", id).
+		Where("account_id = ?", accountID).
+		Scan(ctx); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -117,18 +138,22 @@ func (r *repository) FindByID(ctx context.Context, id uuid.UUID) (*models.Endpoi
 	return e, nil
 }
 
-func (r *repository) List(ctx context.Context, p ListParams) ([]models.Endpoint, int, error) {
+func (r *repository) List(ctx context.Context, accountID uuid.UUID, p ListParams) ([]models.Endpoint, int, error) {
 	// Initialize to a non-nil empty slice so the JSON payload serializes as
 	// [] rather than null when there are no endpoints.
 	endpoints := make([]models.Endpoint, 0)
 
-	count, err := r.db.NewSelect().Model((*models.Endpoint)(nil)).Count(ctx)
+	count, err := r.db.NewSelect().
+		Model((*models.Endpoint)(nil)).
+		Where("account_id = ?", accountID).
+		Count(ctx)
 	if err != nil {
 		return nil, 0, fmt.Errorf("count endpoints: %w", err)
 	}
 
 	err = r.db.NewSelect().
 		Model(&endpoints).
+		Where("account_id = ?", accountID).
 		OrderExpr("created_at DESC").
 		Limit(p.Limit).
 		Offset((p.Page - 1) * p.Limit).
@@ -147,10 +172,11 @@ func (r *repository) CreateVersion(ctx context.Context, v *models.EndpointVersio
 	return nil
 }
 
-func (r *repository) ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
+func (r *repository) ListVersions(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
 	var versions []models.EndpointVersion
 	if err := r.db.NewSelect().
 		Model(&versions).
+		Where("account_id = ?", accountID).
 		Where("endpoint_id = ?", endpointID).
 		OrderExpr("version DESC").
 		Scan(ctx); err != nil {
@@ -172,10 +198,11 @@ func (r *repository) ListActiveByMethod(ctx context.Context, method string) ([]m
 	return endpoints, nil
 }
 
-func (r *repository) ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error) {
+func (r *repository) ListHistory(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.RequestHistory, error) {
 	var history []models.RequestHistory
 	if err := r.db.NewSelect().
 		Model(&history).
+		Where("account_id = ?", accountID).
 		Where("endpoint_id = ?", endpointID).
 		OrderExpr("created_at DESC").
 		Limit(100).
@@ -192,17 +219,21 @@ func (r *repository) CreateHistory(ctx context.Context, h *models.RequestHistory
 	return nil
 }
 
-func (r *repository) CountEndpoints(ctx context.Context) (int, error) {
-	count, err := r.db.NewSelect().Model((*models.Endpoint)(nil)).Count(ctx)
+func (r *repository) CountEndpoints(ctx context.Context, accountID uuid.UUID) (int, error) {
+	count, err := r.db.NewSelect().
+		Model((*models.Endpoint)(nil)).
+		Where("account_id = ?", accountID).
+		Count(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("count endpoints: %w", err)
 	}
 	return count, nil
 }
 
-func (r *repository) CountRecentRequests(ctx context.Context, since time.Time) (int, error) {
+func (r *repository) CountRecentRequests(ctx context.Context, accountID uuid.UUID, since time.Time) (int, error) {
 	count, err := r.db.NewSelect().
 		Model((*models.RequestHistory)(nil)).
+		Where("account_id = ?", accountID).
 		Where("created_at >= ?", since).
 		Count(ctx)
 	if err != nil {
@@ -211,13 +242,14 @@ func (r *repository) CountRecentRequests(ctx context.Context, since time.Time) (
 	return count, nil
 }
 
-func (r *repository) AvgLatency(ctx context.Context, since time.Time) (float64, error) {
+func (r *repository) AvgLatency(ctx context.Context, accountID uuid.UUID, since time.Time) (float64, error) {
 	var result struct {
 		AvgLatency sql.NullFloat64 `bun:"avg_latency"`
 	}
 	err := r.db.NewSelect().
 		ColumnExpr("AVG(latency) AS avg_latency").
 		Table("request_history").
+		Where("account_id = ?", accountID).
 		Where("created_at >= ?", since).
 		Scan(ctx, &result)
 	if err != nil {
@@ -229,9 +261,10 @@ func (r *repository) AvgLatency(ctx context.Context, since time.Time) (float64, 
 	return result.AvgLatency.Float64, nil
 }
 
-func (r *repository) ErrorRate(ctx context.Context, since time.Time) (float64, error) {
+func (r *repository) ErrorRate(ctx context.Context, accountID uuid.UUID, since time.Time) (float64, error) {
 	total, err := r.db.NewSelect().
 		Model((*models.RequestHistory)(nil)).
+		Where("account_id = ?", accountID).
 		Where("created_at >= ?", since).
 		Count(ctx)
 	if err != nil {
@@ -243,6 +276,7 @@ func (r *repository) ErrorRate(ctx context.Context, since time.Time) (float64, e
 
 	errorCount, err := r.db.NewSelect().
 		Model((*models.RequestHistory)(nil)).
+		Where("account_id = ?", accountID).
 		Where("created_at >= ?", since).
 		Where("response LIKE '%\"error\"%'").
 		Count(ctx)

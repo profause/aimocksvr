@@ -15,6 +15,7 @@ type EndpointVersion struct {
 
 	ID            uuid.UUID `bun:",pk,type:uuid" json:"id"`
 	EndpointID    uuid.UUID `bun:"endpoint_id,type:uuid,notnull" json:"endpoint_id"`
+	AccountID     uuid.UUID `bun:"account_id,type:uuid" json:"account_id"`
 	Method        string    `bun:"method,type:varchar(10),notnull,default:''" json:"method"`
 	Path          string    `bun:"path,type:varchar(255),notnull,default:''" json:"path"`
 	Description   string    `bun:"description,type:text,notnull,default:''" json:"description"`

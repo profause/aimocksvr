@@ -171,6 +171,7 @@ func (h *DynamicHandler) recordHistory(ctx context.Context, e *models.Endpoint, 
 	history := &models.RequestHistory{
 		ID:         uuid.New(),
 		EndpointID: e.ID,
+		AccountID:  e.AccountID,
 		Request:    string(reqBody),
 		Response:   string(respBody),
 		Latency:    latency.Milliseconds(),

@@ -29,13 +29,16 @@ func newFakeRepo() *fakeRepo {
 	return &fakeRepo{endpoints: make(map[uuid.UUID]*models.Endpoint)}
 }
 
+// testOwner is the account every service unit test creates endpoints under.
+var testOwner = uuid.MustParse("00000000-0000-0000-0000-00000000aa01")
+
 func (f *fakeRepo) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return fn(ctx)
 }
 
 func (f *fakeRepo) Create(ctx context.Context, e *models.Endpoint) error {
 	for _, existing := range f.endpoints {
-		if existing.Method == e.Method && existing.Path == e.Path {
+		if existing.AccountID == e.AccountID && existing.Method == e.Method && existing.Path == e.Path {
 			return ErrConflict
 		}
 	}
@@ -43,34 +46,38 @@ func (f *fakeRepo) Create(ctx context.Context, e *models.Endpoint) error {
 	return nil
 }
 
-func (f *fakeRepo) Update(ctx context.Context, e *models.Endpoint) error {
-	if _, ok := f.endpoints[e.ID]; !ok {
+func (f *fakeRepo) Update(ctx context.Context, accountID uuid.UUID, e *models.Endpoint) error {
+	existing, ok := f.endpoints[e.ID]
+	if !ok || existing.AccountID != accountID {
 		return ErrNotFound
 	}
 	f.endpoints[e.ID] = e
 	return nil
 }
 
-func (f *fakeRepo) Delete(ctx context.Context, id uuid.UUID) error {
-	if _, ok := f.endpoints[id]; !ok {
+func (f *fakeRepo) Delete(ctx context.Context, accountID, id uuid.UUID) error {
+	existing, ok := f.endpoints[id]
+	if !ok || existing.AccountID != accountID {
 		return ErrNotFound
 	}
 	delete(f.endpoints, id)
 	return nil
 }
 
-func (f *fakeRepo) FindByID(ctx context.Context, id uuid.UUID) (*models.Endpoint, error) {
+func (f *fakeRepo) FindByID(ctx context.Context, accountID, id uuid.UUID) (*models.Endpoint, error) {
 	e, ok := f.endpoints[id]
-	if !ok {
+	if !ok || e.AccountID != accountID {
 		return nil, ErrNotFound
 	}
 	return e, nil
 }
 
-func (f *fakeRepo) List(ctx context.Context, p ListParams) ([]models.Endpoint, int, error) {
+func (f *fakeRepo) List(ctx context.Context, accountID uuid.UUID, p ListParams) ([]models.Endpoint, int, error) {
 	all := make([]models.Endpoint, 0, len(f.endpoints))
 	for _, e := range f.endpoints {
-		all = append(all, *e)
+		if e.AccountID == accountID {
+			all = append(all, *e)
+		}
 	}
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].CreatedAt.After(all[j].CreatedAt)
@@ -93,10 +100,10 @@ func (f *fakeRepo) CreateVersion(ctx context.Context, v *models.EndpointVersion)
 	return nil
 }
 
-func (f *fakeRepo) ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
+func (f *fakeRepo) ListVersions(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
 	var out []models.EndpointVersion
 	for _, v := range f.versions {
-		if v.EndpointID == endpointID {
+		if v.AccountID == accountID && v.EndpointID == endpointID {
 			out = append(out, v)
 		}
 	}
@@ -121,34 +128,40 @@ func (f *fakeRepo) CreateHistory(ctx context.Context, h *models.RequestHistory) 
 	return nil
 }
 
-func (f *fakeRepo) ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error) {
+func (f *fakeRepo) ListHistory(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.RequestHistory, error) {
 	var out []models.RequestHistory
 	for _, h := range f.history {
-		if h.EndpointID == endpointID {
+		if h.AccountID == accountID && h.EndpointID == endpointID {
 			out = append(out, h)
 		}
 	}
 	return out, nil
 }
 
-func (f *fakeRepo) CountEndpoints(ctx context.Context) (int, error) {
-	return len(f.endpoints), nil
-}
-
-func (f *fakeRepo) CountRecentRequests(ctx context.Context, since time.Time) (int, error) {
+func (f *fakeRepo) CountEndpoints(ctx context.Context, accountID uuid.UUID) (int, error) {
 	count := 0
-	for _, h := range f.history {
-		if h.CreatedAt.After(since) {
+	for _, e := range f.endpoints {
+		if e.AccountID == accountID {
 			count++
 		}
 	}
 	return count, nil
 }
 
-func (f *fakeRepo) AvgLatency(ctx context.Context, since time.Time) (float64, error) {
+func (f *fakeRepo) CountRecentRequests(ctx context.Context, accountID uuid.UUID, since time.Time) (int, error) {
+	count := 0
+	for _, h := range f.history {
+		if h.AccountID == accountID && h.CreatedAt.After(since) {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *fakeRepo) AvgLatency(ctx context.Context, accountID uuid.UUID, since time.Time) (float64, error) {
 	var sum, count float64
 	for _, h := range f.history {
-		if h.CreatedAt.After(since) {
+		if h.AccountID == accountID && h.CreatedAt.After(since) {
 			sum += float64(h.Latency)
 			count++
 		}
@@ -159,10 +172,10 @@ func (f *fakeRepo) AvgLatency(ctx context.Context, since time.Time) (float64, er
 	return sum / count, nil
 }
 
-func (f *fakeRepo) ErrorRate(ctx context.Context, since time.Time) (float64, error) {
+func (f *fakeRepo) ErrorRate(ctx context.Context, accountID uuid.UUID, since time.Time) (float64, error) {
 	var total, errors float64
 	for _, h := range f.history {
-		if h.CreatedAt.After(since) {
+		if h.AccountID == accountID && h.CreatedAt.After(since) {
 			total++
 			if strings.Contains(h.Response, `"error"`) {
 				errors++
@@ -237,7 +250,7 @@ func (r *recordingCache) Delete(_ context.Context, keys ...string) error {
 func TestServiceCreate(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "get",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -259,7 +272,7 @@ func TestServiceCreate(t *testing.T) {
 		t.Error("expected endpoint to have a generated id")
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions returned error: %v", err)
 	}
@@ -286,7 +299,7 @@ func TestServiceCreateValidation(t *testing.T) {
 	svc := newTestService()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := svc.Create(context.Background(), tt.params)
+			_, err := svc.Create(context.Background(), testOwner, tt.params)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -306,11 +319,11 @@ func TestServiceCreateConflict(t *testing.T) {
 	svc := newServiceWithRepo(repo)
 
 	in := CreateEndpointParams{Method: "POST", Path: "/users", Prompt: "create a user"}
-	if _, err := svc.Create(context.Background(), in); err != nil {
+	if _, err := svc.Create(context.Background(), testOwner, in); err != nil {
 		t.Fatalf("first Create failed: %v", err)
 	}
 
-	if _, err := svc.Create(context.Background(), in); !errors.Is(err, ErrConflict) {
+	if _, err := svc.Create(context.Background(), testOwner, in); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
 	}
 }
@@ -319,7 +332,7 @@ func TestServiceUpdateCreatesVersionOnPromptChange(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newServiceWithRepo(repo)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users/:id",
 		Prompt: "return one user",
@@ -328,7 +341,7 @@ func TestServiceUpdateCreatesVersionOnPromptChange(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	updated, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	updated, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users/:id",
 		Prompt: "return one user with company details",
@@ -340,7 +353,7 @@ func TestServiceUpdateCreatesVersionOnPromptChange(t *testing.T) {
 		t.Errorf("prompt not updated: %q", updated.Prompt)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -356,7 +369,7 @@ func TestServiceUpdateWithoutPromptChange(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newServiceWithRepo(repo)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -365,7 +378,7 @@ func TestServiceUpdateWithoutPromptChange(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	_, err = svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	_, err = svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -374,7 +387,7 @@ func TestServiceUpdateWithoutPromptChange(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -386,7 +399,7 @@ func TestServiceUpdateWithoutPromptChange(t *testing.T) {
 func TestServiceGetNotFound(t *testing.T) {
 	svc := newTestService()
 
-	_, err := svc.Get(context.Background(), uuid.New())
+	_, err := svc.Get(context.Background(), testOwner, uuid.New())
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -395,7 +408,7 @@ func TestServiceGetNotFound(t *testing.T) {
 func TestServiceDelete(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "DELETE",
 		Path:   "/users/:id",
 		Prompt: "delete a user",
@@ -404,10 +417,10 @@ func TestServiceDelete(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if err := svc.Delete(context.Background(), e.ID); err != nil {
+	if err := svc.Delete(context.Background(), testOwner, e.ID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	if err := svc.Delete(context.Background(), e.ID); !errors.Is(err, ErrNotFound) {
+	if err := svc.Delete(context.Background(), testOwner, e.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound on second delete, got %v", err)
 	}
 }
@@ -416,7 +429,7 @@ func TestServiceListPagination(t *testing.T) {
 	svc := newTestService()
 
 	for i := 0; i < 5; i++ {
-		if _, err := svc.Create(context.Background(), CreateEndpointParams{
+		if _, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 			Method: "GET",
 			Path:   "/resource/" + string(rune('a'+i)),
 			Prompt: "p",
@@ -425,7 +438,7 @@ func TestServiceListPagination(t *testing.T) {
 		}
 	}
 
-	endpoints, total, err := svc.List(context.Background(), ListParams{Page: 2, Limit: 2})
+	endpoints, total, err := svc.List(context.Background(), testOwner, ListParams{Page: 2, Limit: 2})
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -442,7 +455,7 @@ func TestServiceCreateInvalidatesCache(t *testing.T) {
 	logger := zerolog.Nop()
 	svc := NewService(newFakeRepo(), rc, ai.Noop{}, validator.New(), &logger)
 
-	if _, err := svc.Create(context.Background(), CreateEndpointParams{
+	if _, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "POST",
 		Path:   "/users",
 		Prompt: "create a user",
@@ -461,7 +474,7 @@ func TestServiceUpdateInvalidatesOldAndNewMethod(t *testing.T) {
 	logger := zerolog.Nop()
 	svc := NewService(newFakeRepo(), rc, ai.Noop{}, validator.New(), &logger)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "POST",
 		Path:   "/users",
 		Prompt: "create a user",
@@ -471,7 +484,7 @@ func TestServiceUpdateInvalidatesOldAndNewMethod(t *testing.T) {
 	}
 	rc.deleted = nil
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "PUT",
 		Path:   "/users/:id",
 		Prompt: "replace a user",
@@ -491,7 +504,7 @@ func TestServiceDeleteInvalidatesCache(t *testing.T) {
 	logger := zerolog.Nop()
 	svc := NewService(newFakeRepo(), rc, ai.Noop{}, validator.New(), &logger)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "DELETE",
 		Path:   "/users/:id",
 		Prompt: "delete a user",
@@ -501,7 +514,7 @@ func TestServiceDeleteInvalidatesCache(t *testing.T) {
 	}
 	rc.deleted = nil
 
-	if err := svc.Delete(context.Background(), e.ID); err != nil {
+	if err := svc.Delete(context.Background(), testOwner, e.ID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 
@@ -519,7 +532,7 @@ func TestServiceCreateStoresGeneratedSchema(t *testing.T) {
 	a := &fakeAI{schemas: []*ai.Schema{schemaOfType("object")}}
 	svc := newServiceWithAI(newFakeRepo(), a)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "POST",
 		Path:   "/users",
 		Prompt: "create a user",
@@ -528,7 +541,7 @@ func TestServiceCreateStoresGeneratedSchema(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -547,7 +560,7 @@ func TestServiceCreateAIErrorKeepsSchemaEmpty(t *testing.T) {
 	a := &fakeAI{err: errors.New("ai down")}
 	svc := newServiceWithAI(newFakeRepo(), a)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "POST",
 		Path:   "/users",
 		Prompt: "create a user",
@@ -556,7 +569,7 @@ func TestServiceCreateAIErrorKeepsSchemaEmpty(t *testing.T) {
 		t.Fatalf("Create should succeed despite AI failure, got %v", err)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -569,7 +582,7 @@ func TestServiceCreateRejectsInvalidGeneratedSchema(t *testing.T) {
 	a := &fakeAI{schemas: []*ai.Schema{{"type": "not-a-real-type"}}}
 	svc := newServiceWithAI(newFakeRepo(), a)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "POST",
 		Path:   "/users",
 		Prompt: "create a user",
@@ -578,7 +591,7 @@ func TestServiceCreateRejectsInvalidGeneratedSchema(t *testing.T) {
 		t.Fatalf("Create should succeed despite invalid schema, got %v", err)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -591,7 +604,7 @@ func TestServiceUpdateRegeneratesSchemaOnPromptChange(t *testing.T) {
 	a := &fakeAI{schemas: []*ai.Schema{schemaOfType("object"), schemaOfType("array")}}
 	svc := newServiceWithAI(newFakeRepo(), a)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -600,7 +613,7 @@ func TestServiceUpdateRegeneratesSchemaOnPromptChange(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -608,7 +621,7 @@ func TestServiceUpdateRegeneratesSchemaOnPromptChange(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -630,7 +643,7 @@ func TestServiceUpdateKeepsSchemaWhenPromptUnchanged(t *testing.T) {
 	a := &fakeAI{schemas: []*ai.Schema{schemaOfType("object")}}
 	svc := newServiceWithAI(newFakeRepo(), a)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -639,7 +652,7 @@ func TestServiceUpdateKeepsSchemaWhenPromptUnchanged(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -647,7 +660,7 @@ func TestServiceUpdateKeepsSchemaWhenPromptUnchanged(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -664,7 +677,7 @@ func TestServiceCreateSnapshotsFullState(t *testing.T) {
 	svc := newServiceWithRepo(repo)
 	private := false
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method:        "POST",
 		Path:          "/widgets",
 		Description:   "Creates a widget.",
@@ -683,7 +696,7 @@ func TestServiceCreateSnapshotsFullState(t *testing.T) {
 		t.Errorf("expected public=false, got true")
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -720,7 +733,7 @@ func TestServiceCreateSnapshotsFullState(t *testing.T) {
 func TestServiceCreateDefaultsPublicTrue(t *testing.T) {
 	svc := newServiceWithRepo(newFakeRepo())
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -732,7 +745,7 @@ func TestServiceCreateDefaultsPublicTrue(t *testing.T) {
 		t.Error("expected public to default to true")
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -745,7 +758,7 @@ func TestServiceUpdatePublicCreatesVersionAndDiff(t *testing.T) {
 	svc := newServiceWithRepo(newFakeRepo())
 	private := false
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -754,7 +767,7 @@ func TestServiceUpdatePublicCreatesVersionAndDiff(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -763,7 +776,7 @@ func TestServiceUpdatePublicCreatesVersionAndDiff(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	got, err := svc.Get(context.Background(), e.ID)
+	got, err := svc.Get(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -771,7 +784,7 @@ func TestServiceUpdatePublicCreatesVersionAndDiff(t *testing.T) {
 		t.Error("expected public to become false after update")
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -779,7 +792,7 @@ func TestServiceUpdatePublicCreatesVersionAndDiff(t *testing.T) {
 		t.Errorf("expected version 2 with public=false, got %+v", versions)
 	}
 
-	changes, err := svc.Diff(context.Background(), e.ID, 1)
+	changes, err := svc.Diff(context.Background(), testOwner, e.ID, 1)
 	if err != nil {
 		t.Fatalf("Diff failed: %v", err)
 	}
@@ -798,7 +811,7 @@ func TestServiceUpdateCreatesVersionForNonPromptChange(t *testing.T) {
 	a := &fakeAI{schemas: []*ai.Schema{schemaOfType("object")}}
 	svc := newServiceWithAI(newFakeRepo(), a)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method:      "GET",
 		Path:        "/users",
 		Description: "old",
@@ -808,7 +821,7 @@ func TestServiceUpdateCreatesVersionForNonPromptChange(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method:      "GET",
 		Path:        "/users",
 		Description: "new",
@@ -817,7 +830,7 @@ func TestServiceUpdateCreatesVersionForNonPromptChange(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -842,7 +855,7 @@ func TestServiceRollbackRestoresEndpointState(t *testing.T) {
 	a := &fakeAI{schemas: []*ai.Schema{schemaOfType("object"), schemaOfType("array")}}
 	svc := newServiceWithAI(newFakeRepo(), a)
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -851,7 +864,7 @@ func TestServiceRollbackRestoresEndpointState(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -859,7 +872,7 @@ func TestServiceRollbackRestoresEndpointState(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	rolled, err := svc.Rollback(context.Background(), e.ID, 1)
+	rolled, err := svc.Rollback(context.Background(), testOwner, e.ID, 1)
 	if err != nil {
 		t.Fatalf("Rollback failed: %v", err)
 	}
@@ -867,7 +880,7 @@ func TestServiceRollbackRestoresEndpointState(t *testing.T) {
 		t.Errorf("expected prompt restored to v1, got %q", rolled.Prompt)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -888,7 +901,7 @@ func TestServiceRollbackRestoresEndpointState(t *testing.T) {
 func TestServiceRollbackRejectsUnknownVersion(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -897,7 +910,7 @@ func TestServiceRollbackRejectsUnknownVersion(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	_, err = svc.Rollback(context.Background(), e.ID, 99)
+	_, err = svc.Rollback(context.Background(), testOwner, e.ID, 99)
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("expected ValidationError, got %v", err)
@@ -907,7 +920,7 @@ func TestServiceRollbackRejectsUnknownVersion(t *testing.T) {
 func TestServiceRollbackRejectsLatestVersion(t *testing.T) {
 	svc := newServiceWithRepo(newFakeRepo())
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -915,7 +928,7 @@ func TestServiceRollbackRejectsLatestVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -923,7 +936,7 @@ func TestServiceRollbackRejectsLatestVersion(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	_, err = svc.Rollback(context.Background(), e.ID, 2)
+	_, err = svc.Rollback(context.Background(), testOwner, e.ID, 2)
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("expected ValidationError for latest version, got %v", err)
@@ -933,7 +946,7 @@ func TestServiceRollbackRejectsLatestVersion(t *testing.T) {
 func TestServiceRollbackNotFound(t *testing.T) {
 	svc := newTestService()
 
-	_, err := svc.Rollback(context.Background(), uuid.New(), 1)
+	_, err := svc.Rollback(context.Background(), testOwner, uuid.New(), 1)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
 	}
@@ -942,7 +955,7 @@ func TestServiceRollbackNotFound(t *testing.T) {
 func TestServiceDiffListsChanges(t *testing.T) {
 	svc := newServiceWithRepo(newFakeRepo())
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "a",
@@ -950,7 +963,7 @@ func TestServiceDiffListsChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method:      "GET",
 		Path:        "/users",
 		Description: "new desc",
@@ -959,7 +972,7 @@ func TestServiceDiffListsChanges(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	changes, err := svc.Diff(context.Background(), e.ID, 1)
+	changes, err := svc.Diff(context.Background(), testOwner, e.ID, 1)
 	if err != nil {
 		t.Fatalf("Diff failed: %v", err)
 	}
@@ -978,7 +991,7 @@ func TestServiceDiffListsChanges(t *testing.T) {
 func TestServiceDiffLatestIsEmpty(t *testing.T) {
 	svc := newServiceWithRepo(newFakeRepo())
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -986,7 +999,7 @@ func TestServiceDiffLatestIsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
@@ -994,7 +1007,7 @@ func TestServiceDiffLatestIsEmpty(t *testing.T) {
 		t.Fatalf("Update failed: %v", err)
 	}
 
-	changes, err := svc.Diff(context.Background(), e.ID, 2)
+	changes, err := svc.Diff(context.Background(), testOwner, e.ID, 2)
 	if err != nil {
 		t.Fatalf("Diff failed: %v", err)
 	}
@@ -1006,7 +1019,7 @@ func TestServiceDiffLatestIsEmpty(t *testing.T) {
 func TestServiceDiffUnknownVersion(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return a user",
@@ -1015,7 +1028,7 @@ func TestServiceDiffUnknownVersion(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	_, err = svc.Diff(context.Background(), e.ID, 5)
+	_, err = svc.Diff(context.Background(), testOwner, e.ID, 5)
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) {
 		t.Fatalf("expected ValidationError, got %v", err)
@@ -1026,7 +1039,7 @@ func TestServiceImportCreatesEndpoints(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newServiceWithRepo(repo)
 
-	res, err := svc.Import(context.Background(), []ImportItem{
+	res, err := svc.Import(context.Background(), testOwner, []ImportItem{
 		{Method: "GET", Path: "/users", Prompt: "List users.", Schema: `{"type":"object","properties":{"id":{"type":"string","format":"uuid"}}}`},
 		{Method: "POST", Path: "/users", Prompt: "Create a user.", Schema: ""},
 	})
@@ -1048,7 +1061,7 @@ func TestServiceImportCreatesEndpoints(t *testing.T) {
 		t.Errorf("unexpected defaults: %+v", e)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), e.ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -1065,11 +1078,11 @@ func TestServiceImportSkipsConflicts(t *testing.T) {
 	svc := newServiceWithRepo(repo)
 
 	in := ImportItem{Method: "GET", Path: "/users", Prompt: "List users."}
-	if _, err := svc.Import(context.Background(), []ImportItem{in}); err != nil {
+	if _, err := svc.Import(context.Background(), testOwner, []ImportItem{in}); err != nil {
 		t.Fatalf("first Import failed: %v", err)
 	}
 
-	res, err := svc.Import(context.Background(), []ImportItem{in})
+	res, err := svc.Import(context.Background(), testOwner, []ImportItem{in})
 	if err != nil {
 		t.Fatalf("second Import failed: %v", err)
 	}
@@ -1077,7 +1090,7 @@ func TestServiceImportSkipsConflicts(t *testing.T) {
 		t.Fatalf("result = %+v, want created=0 skipped=1", res)
 	}
 
-	endpoints, _, err := svc.List(context.Background(), ListParams{Page: 1, Limit: 100})
+	endpoints, _, err := svc.List(context.Background(), testOwner, ListParams{Page: 1, Limit: 100})
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}
@@ -1090,7 +1103,7 @@ func TestServiceImportDropsInvalidSchema(t *testing.T) {
 	repo := newFakeRepo()
 	svc := newServiceWithRepo(repo)
 
-	res, err := svc.Import(context.Background(), []ImportItem{
+	res, err := svc.Import(context.Background(), testOwner, []ImportItem{
 		{Method: "GET", Path: "/bad", Prompt: "p.", Schema: `{"type":"not-a-real-type"}`},
 	})
 	if err != nil {
@@ -1100,7 +1113,7 @@ func TestServiceImportDropsInvalidSchema(t *testing.T) {
 		t.Fatalf("expected endpoint created despite invalid schema, got %+v", res)
 	}
 
-	versions, err := svc.ListVersions(context.Background(), res.Endpoints[0].ID)
+	versions, err := svc.ListVersions(context.Background(), testOwner, res.Endpoints[0].ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
@@ -1114,7 +1127,7 @@ func TestServiceImportInvalidatesCache(t *testing.T) {
 	logger := zerolog.Nop()
 	svc := NewService(newFakeRepo(), rc, ai.Noop{}, validator.New(), &logger)
 
-	res, err := svc.Import(context.Background(), []ImportItem{
+	res, err := svc.Import(context.Background(), testOwner, []ImportItem{
 		{Method: "POST", Path: "/users", Prompt: "Create a user."},
 		{Method: "GET", Path: "/users/:id", Prompt: "Get a user."},
 	})
@@ -1135,7 +1148,7 @@ func TestServiceImportInvalidatesCache(t *testing.T) {
 func TestServiceCreateStoresRequestSchema(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method:        "POST",
 		Path:          "/users",
 		Prompt:        "create a user",
@@ -1152,7 +1165,7 @@ func TestServiceCreateStoresRequestSchema(t *testing.T) {
 func TestServiceCreateRejectsInvalidRequestSchema(t *testing.T) {
 	svc := newTestService()
 
-	_, err := svc.Create(context.Background(), CreateEndpointParams{
+	_, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method:        "POST",
 		Path:          "/users",
 		Prompt:        "create a user",
@@ -1173,7 +1186,7 @@ func TestServiceCreateRejectsInvalidRequestSchema(t *testing.T) {
 func TestServiceUpdateRequestSchemaSetClearKeep(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "POST",
 		Path:   "/users",
 		Prompt: "create a user",
@@ -1183,7 +1196,7 @@ func TestServiceUpdateRequestSchemaSetClearKeep(t *testing.T) {
 	}
 
 	set := `{"type":"object","properties":{"name":{"type":"string"}}}`
-	updated, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	updated, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method:        "POST",
 		Path:          "/users",
 		Prompt:        "create a user",
@@ -1197,7 +1210,7 @@ func TestServiceUpdateRequestSchemaSetClearKeep(t *testing.T) {
 	}
 
 	clear := ""
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method:        "POST",
 		Path:          "/users",
 		Prompt:        "create a user",
@@ -1205,7 +1218,7 @@ func TestServiceUpdateRequestSchemaSetClearKeep(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Update clear failed: %v", err)
 	}
-	got, err := svc.Get(context.Background(), e.ID)
+	got, err := svc.Get(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -1213,14 +1226,14 @@ func TestServiceUpdateRequestSchemaSetClearKeep(t *testing.T) {
 		t.Errorf("expected cleared request schema, got %q", got.RequestSchema)
 	}
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "POST",
 		Path:   "/users",
 		Prompt: "create a user",
 	}); err != nil {
 		t.Fatalf("Update without schema failed: %v", err)
 	}
-	got, err = svc.Get(context.Background(), e.ID)
+	got, err = svc.Get(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -1232,7 +1245,7 @@ func TestServiceUpdateRequestSchemaSetClearKeep(t *testing.T) {
 func TestServiceImportStoresRequestSchema(t *testing.T) {
 	svc := newTestService()
 
-	res, err := svc.Import(context.Background(), []ImportItem{
+	res, err := svc.Import(context.Background(), testOwner, []ImportItem{
 		{
 			Method:        "POST",
 			Path:          "/users",
@@ -1254,7 +1267,7 @@ func TestServiceImportStoresRequestSchema(t *testing.T) {
 func TestServiceImportDropsInvalidRequestSchema(t *testing.T) {
 	svc := newTestService()
 
-	res, err := svc.Import(context.Background(), []ImportItem{
+	res, err := svc.Import(context.Background(), testOwner, []ImportItem{
 		{Method: "POST", Path: "/users", Prompt: "Create a user.", RequestSchema: `{"type":"nope"}`},
 	})
 	if err != nil {
@@ -1271,7 +1284,7 @@ func TestServiceImportDropsInvalidRequestSchema(t *testing.T) {
 func TestServiceCreateStoresErrorSim(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method:   "GET",
 		Path:     "/boom",
 		Prompt:   "boom",
@@ -1304,7 +1317,7 @@ func TestServiceCreateRejectsInvalidErrorSim(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := newTestService()
-			_, err := svc.Create(context.Background(), CreateEndpointParams{
+			_, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 				Method:   "GET",
 				Path:     "/boom",
 				Prompt:   "boom",
@@ -1339,7 +1352,7 @@ func TestServiceCreateAcceptsValidErrorSimEdges(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			svc := newTestService()
-			if _, err := svc.Create(context.Background(), CreateEndpointParams{
+			if _, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 				Method:   "GET",
 				Path:     "/boom",
 				Prompt:   "boom",
@@ -1354,7 +1367,7 @@ func TestServiceCreateAcceptsValidErrorSimEdges(t *testing.T) {
 func TestServiceUpdateErrorSimSetClearKeep(t *testing.T) {
 	svc := newTestService()
 
-	e, err := svc.Create(context.Background(), CreateEndpointParams{
+	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/boom",
 		Prompt: "boom",
@@ -1364,7 +1377,7 @@ func TestServiceUpdateErrorSimSetClearKeep(t *testing.T) {
 	}
 
 	set := `{"status":429}`
-	updated, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	updated, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method:   "GET",
 		Path:     "/boom",
 		Prompt:   "boom",
@@ -1378,7 +1391,7 @@ func TestServiceUpdateErrorSimSetClearKeep(t *testing.T) {
 	}
 
 	clear := ""
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method:   "GET",
 		Path:     "/boom",
 		Prompt:   "boom",
@@ -1386,7 +1399,7 @@ func TestServiceUpdateErrorSimSetClearKeep(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Update clear failed: %v", err)
 	}
-	got, err := svc.Get(context.Background(), e.ID)
+	got, err := svc.Get(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -1394,14 +1407,14 @@ func TestServiceUpdateErrorSimSetClearKeep(t *testing.T) {
 		t.Errorf("expected cleared error_sim, got %q", got.ErrorSim)
 	}
 
-	if _, err := svc.Update(context.Background(), e.ID, UpdateEndpointParams{
+	if _, err := svc.Update(context.Background(), testOwner, e.ID, UpdateEndpointParams{
 		Method: "GET",
 		Path:   "/boom",
 		Prompt: "boom",
 	}); err != nil {
 		t.Fatalf("Update without error_sim failed: %v", err)
 	}
-	got, err = svc.Get(context.Background(), e.ID)
+	got, err = svc.Get(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
