@@ -6,6 +6,7 @@ import { z } from 'zod'
 import { toast } from 'sonner'
 
 import { AuthLayout } from '@/layouts/auth-layout'
+import { PasswordInput } from '@/components/password-input'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -78,9 +79,8 @@ export function LoginPage() {
         </div>
         <div className="flex flex-col gap-2">
           <Label htmlFor="password">Password</Label>
-          <Input
+          <PasswordInput
             id="password"
-            type="password"
             autoComplete="current-password"
             {...form.register('password')}
           />
