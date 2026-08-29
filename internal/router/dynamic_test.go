@@ -83,7 +83,7 @@ type rtSchemas struct {
 	schema string
 }
 
-func (s rtSchemas) LoadSchema(context.Context, uuid.UUID) (string, error) {
+func (s rtSchemas) LoadSchema(context.Context, uuid.UUID, uuid.UUID) (string, error) {
 	return s.schema, nil
 }
 

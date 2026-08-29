@@ -50,8 +50,8 @@ type Repository interface {
 	ListActiveByMethod(ctx context.Context, method string) ([]models.Endpoint, error)
 
 	CreateVersion(ctx context.Context, v *models.EndpointVersion) error
-	ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error)
-	ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error)
+	ListVersions(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.EndpointVersion, error)
+	ListHistory(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.RequestHistory, error)
 	CreateHistory(ctx context.Context, h *models.RequestHistory) error
 
 	CountEndpoints(ctx context.Context, accountID uuid.UUID) (int, error)
@@ -172,10 +172,11 @@ func (r *repository) CreateVersion(ctx context.Context, v *models.EndpointVersio
 	return nil
 }
 
-func (r *repository) ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
+func (r *repository) ListVersions(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
 	var versions []models.EndpointVersion
 	if err := r.db.NewSelect().
 		Model(&versions).
+		Where("account_id = ?", accountID).
 		Where("endpoint_id = ?", endpointID).
 		OrderExpr("version DESC").
 		Scan(ctx); err != nil {
@@ -197,10 +198,11 @@ func (r *repository) ListActiveByMethod(ctx context.Context, method string) ([]m
 	return endpoints, nil
 }
 
-func (r *repository) ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error) {
+func (r *repository) ListHistory(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.RequestHistory, error) {
 	var history []models.RequestHistory
 	if err := r.db.NewSelect().
 		Model(&history).
+		Where("account_id = ?", accountID).
 		Where("endpoint_id = ?", endpointID).
 		OrderExpr("created_at DESC").
 		Limit(100).

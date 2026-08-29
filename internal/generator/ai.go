@@ -14,9 +14,10 @@ import (
 )
 
 // SchemaLoader resolves the JSON Schema that governs an endpoint's responses.
-// The active schema is the one stored on the endpoint's latest version.
+// The active schema is the one stored on the endpoint's latest version. The
+// account owning the endpoint is passed so lookups stay scoped per account.
 type SchemaLoader interface {
-	LoadSchema(ctx context.Context, endpointID uuid.UUID) (string, error)
+	LoadSchema(ctx context.Context, accountID, endpointID uuid.UUID) (string, error)
 }
 
 // errNoValidResponse reports that the AI produced no schema-conforming output
@@ -58,7 +59,7 @@ func (g *aiGenerator) Generate(ctx context.Context, req *Request) (*Response, er
 		return g.fallback.Generate(ctx, req)
 	}
 
-	schema, err := g.schemas.LoadSchema(ctx, req.Endpoint.ID)
+	schema, err := g.schemas.LoadSchema(ctx, req.Endpoint.AccountID, req.Endpoint.ID)
 	if err != nil {
 		g.logger.Warn().Err(err).Str("endpoint_id", req.Endpoint.ID.String()).Msg("failed to load schema, using fallback generator")
 		return g.fallback.Generate(ctx, req)

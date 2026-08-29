@@ -80,8 +80,8 @@ type schemaLoader struct {
 	repo endpoint.Repository
 }
 
-func (s schemaLoader) LoadSchema(ctx context.Context, endpointID uuid.UUID) (string, error) {
-	versions, err := s.repo.ListVersions(ctx, endpointID)
+func (s schemaLoader) LoadSchema(ctx context.Context, accountID, endpointID uuid.UUID) (string, error) {
+	versions, err := s.repo.ListVersions(ctx, accountID, endpointID)
 	if err != nil {
 		return "", err
 	}

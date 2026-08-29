@@ -100,10 +100,10 @@ func (f *fakeRepo) CreateVersion(ctx context.Context, v *models.EndpointVersion)
 	return nil
 }
 
-func (f *fakeRepo) ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
+func (f *fakeRepo) ListVersions(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
 	var out []models.EndpointVersion
 	for _, v := range f.versions {
-		if v.EndpointID == endpointID {
+		if v.AccountID == accountID && v.EndpointID == endpointID {
 			out = append(out, v)
 		}
 	}
@@ -128,10 +128,10 @@ func (f *fakeRepo) CreateHistory(ctx context.Context, h *models.RequestHistory) 
 	return nil
 }
 
-func (f *fakeRepo) ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error) {
+func (f *fakeRepo) ListHistory(ctx context.Context, accountID, endpointID uuid.UUID) ([]models.RequestHistory, error) {
 	var out []models.RequestHistory
 	for _, h := range f.history {
-		if h.EndpointID == endpointID {
+		if h.AccountID == accountID && h.EndpointID == endpointID {
 			out = append(out, h)
 		}
 	}

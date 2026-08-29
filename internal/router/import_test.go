@@ -110,10 +110,10 @@ func (f *importRepo) CreateVersion(_ context.Context, v *models.EndpointVersion)
 	return nil
 }
 
-func (f *importRepo) ListVersions(_ context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
+func (f *importRepo) ListVersions(_ context.Context, accountID, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
 	var out []models.EndpointVersion
 	for _, v := range f.versions {
-		if v.EndpointID == endpointID {
+		if v.AccountID == accountID && v.EndpointID == endpointID {
 			out = append(out, v)
 		}
 	}
@@ -123,10 +123,10 @@ func (f *importRepo) ListVersions(_ context.Context, endpointID uuid.UUID) ([]mo
 	return out, nil
 }
 
-func (f *importRepo) ListHistory(_ context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error) {
+func (f *importRepo) ListHistory(_ context.Context, accountID, endpointID uuid.UUID) ([]models.RequestHistory, error) {
 	var out []models.RequestHistory
 	for _, h := range f.history {
-		if h.EndpointID == endpointID {
+		if h.AccountID == accountID && h.EndpointID == endpointID {
 			out = append(out, h)
 		}
 	}
@@ -196,8 +196,8 @@ type importSchemaLoader struct {
 	repo *importRepo
 }
 
-func (s importSchemaLoader) LoadSchema(ctx context.Context, endpointID uuid.UUID) (string, error) {
-	versions, err := s.repo.ListVersions(ctx, endpointID)
+func (s importSchemaLoader) LoadSchema(ctx context.Context, accountID, endpointID uuid.UUID) (string, error) {
+	versions, err := s.repo.ListVersions(ctx, accountID, endpointID)
 	if err != nil {
 		return "", err
 	}

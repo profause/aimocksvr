@@ -111,12 +111,20 @@ func TestRepositoryCRUD(t *testing.T) {
 		t.Fatalf("CreateVersion failed: %v", err)
 	}
 
-	versions, err := repo.ListVersions(ctx, e.ID)
+	versions, err := repo.ListVersions(ctx, owner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
 	if len(versions) != 1 || versions[0].Version != 1 {
 		t.Fatalf("expected one version, got %+v", versions)
+	}
+
+	// The version rows are scoped by owner at the repository layer: a foreign
+	// account must not see them, even when it knows the endpoint id.
+	if foreignVersions, err := repo.ListVersions(ctx, foreign, e.ID); err != nil {
+		t.Fatalf("ListVersions for foreign owner failed: %v", err)
+	} else if len(foreignVersions) != 0 {
+		t.Fatalf("expected no versions for foreign owner, got %+v", foreignVersions)
 	}
 
 	if err := repo.Delete(ctx, owner, e.ID); err != nil {

@@ -39,7 +39,7 @@ func (g *fakerGenerator) Generate(ctx context.Context, req *Request) (*Response,
 		return g.fallback.Generate(ctx, req)
 	}
 
-	schema, err := g.schemas.LoadSchema(ctx, req.Endpoint.ID)
+	schema, err := g.schemas.LoadSchema(ctx, req.Endpoint.AccountID, req.Endpoint.ID)
 	if err != nil {
 		g.log.Warn().Err(err).Str("endpoint_id", req.Endpoint.ID.String()).Msg("failed to load schema, using fallback generator")
 		return g.fallback.Generate(ctx, req)

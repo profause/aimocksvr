@@ -189,7 +189,7 @@ func (s *service) Update(ctx context.Context, owner, id uuid.UUID, in UpdateEndp
 	}
 	existing.UpdatedAt = time.Now().UTC()
 
-	versions, err := s.repo.ListVersions(ctx, id)
+	versions, err := s.repo.ListVersions(ctx, owner, id)
 	if err != nil {
 		return nil, err
 	}
@@ -228,7 +228,7 @@ func (s *service) Rollback(ctx context.Context, owner, id uuid.UUID, version int
 		return nil, err
 	}
 
-	versions, err := s.repo.ListVersions(ctx, id)
+	versions, err := s.repo.ListVersions(ctx, owner, id)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +277,7 @@ func (s *service) Diff(ctx context.Context, owner, id uuid.UUID, version int) ([
 		return nil, err
 	}
 
-	versions, err := s.repo.ListVersions(ctx, id)
+	versions, err := s.repo.ListVersions(ctx, owner, id)
 	if err != nil {
 		return nil, err
 	}
@@ -313,14 +313,14 @@ func (s *service) ListVersions(ctx context.Context, owner, endpointID uuid.UUID)
 	if _, err := s.repo.FindByID(ctx, owner, endpointID); err != nil {
 		return nil, err
 	}
-	return s.repo.ListVersions(ctx, endpointID)
+	return s.repo.ListVersions(ctx, owner, endpointID)
 }
 
 func (s *service) ListHistory(ctx context.Context, owner, endpointID uuid.UUID) ([]models.RequestHistory, error) {
 	if _, err := s.repo.FindByID(ctx, owner, endpointID); err != nil {
 		return nil, err
 	}
-	return s.repo.ListHistory(ctx, endpointID)
+	return s.repo.ListHistory(ctx, owner, endpointID)
 }
 
 func (s *service) Stats(ctx context.Context, owner uuid.UUID) (*DashboardStats, error) {
