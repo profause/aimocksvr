@@ -53,34 +53,38 @@ func (f *importRepo) Create(_ context.Context, e *models.Endpoint) error {
 	return nil
 }
 
-func (f *importRepo) Update(ctx context.Context, e *models.Endpoint) error {
-	if _, ok := f.endpoints[e.ID]; !ok {
+func (f *importRepo) Update(_ context.Context, accountID uuid.UUID, e *models.Endpoint) error {
+	existing, ok := f.endpoints[e.ID]
+	if !ok || existing.AccountID != accountID {
 		return endpoint.ErrNotFound
 	}
 	f.endpoints[e.ID] = e
 	return nil
 }
 
-func (f *importRepo) Delete(_ context.Context, id uuid.UUID) error {
-	if _, ok := f.endpoints[id]; !ok {
+func (f *importRepo) Delete(_ context.Context, accountID, id uuid.UUID) error {
+	existing, ok := f.endpoints[id]
+	if !ok || existing.AccountID != accountID {
 		return endpoint.ErrNotFound
 	}
 	delete(f.endpoints, id)
 	return nil
 }
 
-func (f *importRepo) FindByID(_ context.Context, id uuid.UUID) (*models.Endpoint, error) {
+func (f *importRepo) FindByID(_ context.Context, accountID, id uuid.UUID) (*models.Endpoint, error) {
 	e, ok := f.endpoints[id]
-	if !ok {
+	if !ok || e.AccountID != accountID {
 		return nil, endpoint.ErrNotFound
 	}
 	return e, nil
 }
 
-func (f *importRepo) List(_ context.Context, p endpoint.ListParams) ([]models.Endpoint, int, error) {
+func (f *importRepo) List(_ context.Context, accountID uuid.UUID, p endpoint.ListParams) ([]models.Endpoint, int, error) {
 	all := make([]models.Endpoint, 0, len(f.endpoints))
 	for _, e := range f.endpoints {
-		all = append(all, *e)
+		if e.AccountID == accountID {
+			all = append(all, *e)
+		}
 	}
 	sort.Slice(all, func(i, j int) bool {
 		return all[i].CreatedAt.After(all[j].CreatedAt)
@@ -134,36 +138,56 @@ func (f *importRepo) CreateHistory(_ context.Context, h *models.RequestHistory) 
 	return nil
 }
 
-func (f *importRepo) CountEndpoints(_ context.Context) (int, error) {
-	return len(f.endpoints), nil
-}
-
-func (f *importRepo) CountRecentRequests(_ context.Context, _ time.Time) (int, error) {
-	return len(f.history), nil
-}
-
-func (f *importRepo) AvgLatency(_ context.Context, _ time.Time) (float64, error) {
-	if len(f.history) == 0 {
-		return 0, nil
+func (f *importRepo) CountEndpoints(_ context.Context, accountID uuid.UUID) (int, error) {
+	count := 0
+	for _, e := range f.endpoints {
+		if e.AccountID == accountID {
+			count++
+		}
 	}
+	return count, nil
+}
+
+func (f *importRepo) CountRecentRequests(_ context.Context, accountID uuid.UUID, _ time.Time) (int, error) {
+	count := 0
+	for _, h := range f.history {
+		if h.AccountID == accountID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *importRepo) AvgLatency(_ context.Context, accountID uuid.UUID, _ time.Time) (float64, error) {
 	var sum int64
+	var n int
 	for _, h := range f.history {
-		sum += h.Latency
+		if h.AccountID == accountID {
+			sum += h.Latency
+			n++
+		}
 	}
-	return float64(sum) / float64(len(f.history)), nil
-}
-
-func (f *importRepo) ErrorRate(_ context.Context, _ time.Time) (float64, error) {
-	if len(f.history) == 0 {
+	if n == 0 {
 		return 0, nil
 	}
-	var errors int
+	return float64(sum) / float64(n), nil
+}
+
+func (f *importRepo) ErrorRate(_ context.Context, accountID uuid.UUID, _ time.Time) (float64, error) {
+	var errors, total int
 	for _, h := range f.history {
+		if h.AccountID != accountID {
+			continue
+		}
+		total++
 		if strings.Contains(h.Response, `"error"`) {
 			errors++
 		}
 	}
-	return float64(errors) / float64(len(f.history)) * 100, nil
+	if total == 0 {
+		return 0, nil
+	}
+	return float64(errors) / float64(total) * 100, nil
 }
 
 // importSchemaLoader adapts the repo to the generator's SchemaLoader, like the
@@ -191,11 +215,10 @@ func newImportApp(t *testing.T) *fiber.App {
 	repo := newImportRepo()
 	logger := zerolog.Nop()
 	esvc := endpoint.NewService(repo, cache.Noop{}, ai.Noop{}, validator.New(), &logger)
-	h := endpoint.NewHandler(esvc, &logger)
-	imp := importer.NewHandler(importer.NewService(esvc, &logger), &logger)
-
 	cfg := &config.Config{}
 	cfg.App.Name = "aimocksvr-test"
+	h := endpoint.NewHandler(esvc, cfg, &logger)
+	imp := importer.NewHandler(importer.NewService(esvc, &logger), cfg, &logger)
 
 	gen := generator.NewFaker(importSchemaLoader{repo: repo}, generator.NewStatic(), &logger)
 	dyn := NewDynamicHandler(repo, gen, validator.New(), cfg, &logger)

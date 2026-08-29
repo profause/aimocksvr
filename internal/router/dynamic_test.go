@@ -321,7 +321,7 @@ type stateStore struct {
 	data map[string]map[string]map[string]any
 }
 
-func (s *stateStore) Create(_ context.Context, collection, resourceID string, data map[string]any) error {
+func (s *stateStore) Create(_ context.Context, _ uuid.UUID, collection, resourceID string, data map[string]any) error {
 	if s.data == nil {
 		s.data = map[string]map[string]map[string]any{}
 	}
@@ -332,17 +332,17 @@ func (s *stateStore) Create(_ context.Context, collection, resourceID string, da
 	return nil
 }
 
-func (s *stateStore) Get(_ context.Context, collection, resourceID string) (map[string]any, bool, error) {
+func (s *stateStore) Get(_ context.Context, _ uuid.UUID, collection, resourceID string) (map[string]any, bool, error) {
 	data, ok := s.data[collection][resourceID]
 	return data, ok, nil
 }
 
-func (s *stateStore) Update(_ context.Context, collection, resourceID string, data map[string]any) error {
+func (s *stateStore) Update(_ context.Context, _ uuid.UUID, collection, resourceID string, data map[string]any) error {
 	s.data[collection][resourceID] = data
 	return nil
 }
 
-func (s *stateStore) Delete(_ context.Context, collection, resourceID string) (bool, error) {
+func (s *stateStore) Delete(_ context.Context, _ uuid.UUID, collection, resourceID string) (bool, error) {
 	if _, ok := s.data[collection][resourceID]; !ok {
 		return false, nil
 	}

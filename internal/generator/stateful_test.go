@@ -23,7 +23,7 @@ func newFakeStore() *fakeStore {
 	return &fakeStore{data: map[string]map[string]map[string]any{}}
 }
 
-func (f *fakeStore) Create(_ context.Context, collection, resourceID string, data map[string]any) error {
+func (f *fakeStore) Create(_ context.Context, accountID uuid.UUID, collection, resourceID string, data map[string]any) error {
 	if _, exists := f.data[collection][resourceID]; exists {
 		return state.ErrConflict
 	}
@@ -34,12 +34,12 @@ func (f *fakeStore) Create(_ context.Context, collection, resourceID string, dat
 	return nil
 }
 
-func (f *fakeStore) Get(_ context.Context, collection, resourceID string) (map[string]any, bool, error) {
+func (f *fakeStore) Get(_ context.Context, accountID uuid.UUID, collection, resourceID string) (map[string]any, bool, error) {
 	data, exists := f.data[collection][resourceID]
 	return data, exists, nil
 }
 
-func (f *fakeStore) Update(_ context.Context, collection, resourceID string, data map[string]any) error {
+func (f *fakeStore) Update(_ context.Context, accountID uuid.UUID, collection, resourceID string, data map[string]any) error {
 	if _, exists := f.data[collection][resourceID]; !exists {
 		return state.ErrNotFound
 	}
@@ -47,7 +47,7 @@ func (f *fakeStore) Update(_ context.Context, collection, resourceID string, dat
 	return nil
 }
 
-func (f *fakeStore) Delete(_ context.Context, collection, resourceID string) (bool, error) {
+func (f *fakeStore) Delete(_ context.Context, accountID uuid.UUID, collection, resourceID string) (bool, error) {
 	if _, exists := f.data[collection][resourceID]; !exists {
 		return false, nil
 	}
@@ -133,7 +133,7 @@ func TestStatefulCreateAssignsGeneratedID(t *testing.T) {
 		t.Errorf("expected uuid id, got %q", id)
 	}
 
-	stored, found, err := store.Get(context.Background(), "/users", id)
+	stored, found, err := store.Get(context.Background(), uuid.Nil, "/users", id)
 	if err != nil || !found {
 		t.Fatalf("expected resource stored (found=%v err=%v)", found, err)
 	}
@@ -154,7 +154,7 @@ func TestStatefulCreateUsesBodyID(t *testing.T) {
 	if resp.Status != http.StatusCreated {
 		t.Errorf("expected 201, got %d", resp.Status)
 	}
-	if _, found, _ := store.Get(context.Background(), "/users", "5"); !found {
+	if _, found, _ := store.Get(context.Background(), uuid.Nil, "/users", "5"); !found {
 		t.Errorf("expected resource stored under id 5")
 	}
 	if !strings.Contains(string(resp.Body), `"id":5`) {
@@ -171,7 +171,7 @@ func TestStatefulCreateWithPathID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate failed: %v", err)
 	}
-	stored, found, _ := store.Get(context.Background(), "/users", "7")
+	stored, found, _ := store.Get(context.Background(), uuid.Nil, "/users", "7")
 	if !found {
 		t.Fatalf("expected resource stored under path id 7")
 	}
@@ -202,7 +202,7 @@ func TestStatefulCreateConflict(t *testing.T) {
 
 func TestStatefulGetReturnsStoredResource(t *testing.T) {
 	store := newFakeStore()
-	if err := store.Create(context.Background(), "/users", "1", map[string]any{"id": 1, "name": "Ada"}); err != nil {
+	if err := store.Create(context.Background(), uuid.Nil, "/users", "1", map[string]any{"id": 1, "name": "Ada"}); err != nil {
 		t.Fatalf("seed failed: %v", err)
 	}
 	inner := &fakeInner{}
@@ -239,7 +239,7 @@ func TestStatefulGetNotFound(t *testing.T) {
 
 func TestStatefulPutReplacesResource(t *testing.T) {
 	store := newFakeStore()
-	if err := store.Create(context.Background(), "/users", "1", map[string]any{"id": 1, "name": "Ada"}); err != nil {
+	if err := store.Create(context.Background(), uuid.Nil, "/users", "1", map[string]any{"id": 1, "name": "Ada"}); err != nil {
 		t.Fatalf("seed failed: %v", err)
 	}
 	g := newStatefulTest(t, store, &fakeInner{})
@@ -251,7 +251,7 @@ func TestStatefulPutReplacesResource(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.Status)
 	}
-	stored, found, _ := store.Get(context.Background(), "/users", "1")
+	stored, found, _ := store.Get(context.Background(), uuid.Nil, "/users", "1")
 	if !found {
 		t.Fatalf("expected resource to still exist")
 	}
@@ -268,7 +268,7 @@ func TestStatefulPutReplacesResource(t *testing.T) {
 
 func TestStatefulPutOverridesBodyIDWithPath(t *testing.T) {
 	store := newFakeStore()
-	if err := store.Create(context.Background(), "/users", "1", map[string]any{"id": 1}); err != nil {
+	if err := store.Create(context.Background(), uuid.Nil, "/users", "1", map[string]any{"id": 1}); err != nil {
 		t.Fatalf("seed failed: %v", err)
 	}
 	g := newStatefulTest(t, store, &fakeInner{})
@@ -280,7 +280,7 @@ func TestStatefulPutOverridesBodyIDWithPath(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.Status)
 	}
-	stored, _, _ := store.Get(context.Background(), "/users", "1")
+	stored, _, _ := store.Get(context.Background(), uuid.Nil, "/users", "1")
 	if stored["id"] != "1" {
 		t.Errorf("expected path id to win, got %v", stored["id"])
 	}
@@ -299,7 +299,7 @@ func TestStatefulPutNotFound(t *testing.T) {
 
 func TestStatefulPatchMergesDeeply(t *testing.T) {
 	store := newFakeStore()
-	if err := store.Create(context.Background(), "/users", "1", map[string]any{
+	if err := store.Create(context.Background(), uuid.Nil, "/users", "1", map[string]any{
 		"id":   1,
 		"name": "Ada",
 		"addr": map[string]any{"city": "Lisbon", "zip": "1000"},
@@ -315,7 +315,7 @@ func TestStatefulPatchMergesDeeply(t *testing.T) {
 	if resp.Status != http.StatusOK {
 		t.Errorf("expected 200, got %d", resp.Status)
 	}
-	stored, _, _ := store.Get(context.Background(), "/users", "1")
+	stored, _, _ := store.Get(context.Background(), uuid.Nil, "/users", "1")
 	if stored["name"] != "Ada Lovelace" {
 		t.Errorf("expected patched name, got %v", stored["name"])
 	}
@@ -338,7 +338,7 @@ func TestStatefulPatchNotFound(t *testing.T) {
 
 func TestStatefulDeleteRemovesResource(t *testing.T) {
 	store := newFakeStore()
-	if err := store.Create(context.Background(), "/users", "1", map[string]any{"id": 1}); err != nil {
+	if err := store.Create(context.Background(), uuid.Nil, "/users", "1", map[string]any{"id": 1}); err != nil {
 		t.Fatalf("seed failed: %v", err)
 	}
 	g := newStatefulTest(t, store, &fakeInner{})
@@ -353,7 +353,7 @@ func TestStatefulDeleteRemovesResource(t *testing.T) {
 	if len(resp.Body) != 0 {
 		t.Errorf("expected empty body, got %q", resp.Body)
 	}
-	if _, found, _ := store.Get(context.Background(), "/users", "1"); found {
+	if _, found, _ := store.Get(context.Background(), uuid.Nil, "/users", "1"); found {
 		t.Errorf("expected resource to be removed")
 	}
 }
@@ -371,7 +371,7 @@ func TestStatefulDeleteNotFound(t *testing.T) {
 
 func TestStatefulPutNonObjectBody(t *testing.T) {
 	store := newFakeStore()
-	if err := store.Create(context.Background(), "/users", "1", map[string]any{"id": 1}); err != nil {
+	if err := store.Create(context.Background(), uuid.Nil, "/users", "1", map[string]any{"id": 1}); err != nil {
 		t.Fatalf("seed failed: %v", err)
 	}
 	g := newStatefulTest(t, store, &fakeInner{})
@@ -414,15 +414,15 @@ func TestStatefulGeneratorPropagatesStoreErrors(t *testing.T) {
 
 type errorStore struct{}
 
-func (e *errorStore) Create(context.Context, string, string, map[string]any) error {
+func (e *errorStore) Create(context.Context, uuid.UUID, string, string, map[string]any) error {
 	return errors.New("store down")
 }
-func (e *errorStore) Get(context.Context, string, string) (map[string]any, bool, error) {
+func (e *errorStore) Get(context.Context, uuid.UUID, string, string) (map[string]any, bool, error) {
 	return nil, false, errors.New("store down")
 }
-func (e *errorStore) Update(context.Context, string, string, map[string]any) error {
+func (e *errorStore) Update(context.Context, uuid.UUID, string, string, map[string]any) error {
 	return errors.New("store down")
 }
-func (e *errorStore) Delete(context.Context, string, string) (bool, error) {
+func (e *errorStore) Delete(context.Context, uuid.UUID, string, string) (bool, error) {
 	return false, errors.New("store down")
 }

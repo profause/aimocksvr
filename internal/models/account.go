@@ -17,3 +17,9 @@ type Account struct {
 	CreatedAt    time.Time `bun:"created_at,type:timestamptz,notnull,default:now()" json:"created_at"`
 	UpdatedAt    time.Time `bun:"updated_at,type:timestamptz,notnull,default:now()" json:"updated_at"`
 }
+
+// LegacyAccountID owns every resource that predates account-based auth (and,
+// when auth is disabled, every new resource). It corresponds to the synthetic
+// legacy account seeded by migration 000011 with the reserved email
+// legacy@local; it is never used to log in.
+var LegacyAccountID = uuid.MustParse("00000000-0000-0000-0000-000000000001")

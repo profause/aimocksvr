@@ -7,15 +7,23 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/uptrace/bun"
 
 	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/database"
 	"github.com/profause/aimocksvr/internal/models"
 )
 
+// testEnv bundles the repository and the raw DB so tests can seed accounts
+// (endpoints reference accounts via a foreign key).
+type testEnv struct {
+	repo Repository
+	db   *bun.DB
+}
+
 // newTestDB connects to PostgreSQL. The test is skipped when
 // MOCKSVR_TEST_DATABASE_URL is not set, so the suite runs without a database.
-func newTestDB(t *testing.T) Repository {
+func newTestDB(t *testing.T) *testEnv {
 	t.Helper()
 
 	url := os.Getenv("MOCKSVR_TEST_DATABASE_URL")
@@ -32,22 +40,39 @@ func newTestDB(t *testing.T) Repository {
 
 	ctx := context.Background()
 	if _, err := db.ExecContext(ctx,
-		"DROP TABLE IF EXISTS mock_resources, request_history, endpoint_versions, endpoints, schema_migrations CASCADE"); err != nil {
+		"DROP TABLE IF EXISTS mock_resources, request_history, endpoint_versions, endpoints, accounts, schema_migrations CASCADE"); err != nil {
 		t.Fatalf("reset test schema: %v", err)
 	}
 	if err := database.Migrate(url); err != nil {
 		t.Fatalf("apply migrations: %v", err)
 	}
 
-	return NewRepository(db)
+	return &testEnv{repo: NewRepository(db), db: db}
+}
+
+// newAccount inserts an account and returns its id so tests can own endpoints
+// and exercise cross-account isolation.
+func (e *testEnv) newAccount(ctx context.Context, t *testing.T) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := e.db.ExecContext(ctx,
+		"INSERT INTO accounts (id, email, password_hash) VALUES (?, ?, ?)",
+		id, id.String()+"@example.com", "$2a$10$dummy"); err != nil {
+		t.Fatalf("seed account: %v", err)
+	}
+	return id
 }
 
 func TestRepositoryCRUD(t *testing.T) {
-	repo := newTestDB(t)
+	env := newTestDB(t)
+	repo := env.repo
 	ctx := context.Background()
+	owner := env.newAccount(ctx, t)
+	foreign := env.newAccount(ctx, t)
 
 	e := &models.Endpoint{
 		ID:           uuid.New(),
+		AccountID:    owner,
 		Method:       "GET",
 		Path:         "/users/:id",
 		Description:  "fetch one user",
@@ -59,7 +84,7 @@ func TestRepositoryCRUD(t *testing.T) {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	found, err := repo.FindByID(ctx, e.ID)
+	found, err := repo.FindByID(ctx, owner, e.ID)
 	if err != nil {
 		t.Fatalf("FindByID failed: %v", err)
 	}
@@ -67,14 +92,19 @@ func TestRepositoryCRUD(t *testing.T) {
 		t.Errorf("unexpected endpoint: %+v", found)
 	}
 
+	if _, err := repo.FindByID(ctx, foreign, e.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expected ErrNotFound for foreign owner, got %v", err)
+	}
+
 	e.Prompt = "return one user with a company"
-	if err := repo.Update(ctx, e); err != nil {
+	if err := repo.Update(ctx, owner, e); err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
 
 	if err := repo.CreateVersion(ctx, &models.EndpointVersion{
 		ID:         uuid.New(),
 		EndpointID: e.ID,
+		AccountID:  owner,
 		Prompt:     e.Prompt,
 		Version:    1,
 	}); err != nil {
@@ -89,21 +119,25 @@ func TestRepositoryCRUD(t *testing.T) {
 		t.Fatalf("expected one version, got %+v", versions)
 	}
 
-	if err := repo.Delete(ctx, e.ID); err != nil {
+	if err := repo.Delete(ctx, owner, e.ID); err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
-	if _, err := repo.FindByID(ctx, e.ID); !errors.Is(err, ErrNotFound) {
+	if _, err := repo.FindByID(ctx, owner, e.ID); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound after delete, got %v", err)
 	}
 }
 
 func TestRepositoryConflict(t *testing.T) {
-	repo := newTestDB(t)
+	env := newTestDB(t)
+	repo := env.repo
 	ctx := context.Background()
+	owner := env.newAccount(ctx, t)
+	other := env.newAccount(ctx, t)
 
 	makeEndpoint := func() *models.Endpoint {
 		return &models.Endpoint{
 			ID:           uuid.New(),
+			AccountID:    owner,
 			Method:       "POST",
 			Path:         "/users",
 			Prompt:       "create a user",
@@ -118,15 +152,32 @@ func TestRepositoryConflict(t *testing.T) {
 	if err := repo.Create(ctx, makeEndpoint()); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
 	}
+
+	// The same method+path may be owned by a different account.
+	foreign := &models.Endpoint{
+		ID:           uuid.New(),
+		AccountID:    other,
+		Method:       "POST",
+		Path:         "/users",
+		Prompt:       "another account's user create",
+		ResponseType: models.ResponseTypeJSON,
+		Status:       models.StatusActive,
+	}
+	if err := repo.Create(ctx, foreign); err != nil {
+		t.Fatalf("cross-account Create failed: %v", err)
+	}
 }
 
 func TestRepositoryList(t *testing.T) {
-	repo := newTestDB(t)
+	env := newTestDB(t)
+	repo := env.repo
 	ctx := context.Background()
+	owner := env.newAccount(ctx, t)
 
 	for i := 0; i < 3; i++ {
 		e := &models.Endpoint{
 			ID:           uuid.New(),
+			AccountID:    owner,
 			Method:       "GET",
 			Path:         "/items/" + string(rune('a'+i)),
 			Prompt:       "return an item",
@@ -138,7 +189,22 @@ func TestRepositoryList(t *testing.T) {
 		}
 	}
 
-	endpoints, total, err := repo.List(ctx, ListParams{Page: 1, Limit: 2})
+	// A different account owns this endpoint and must stay isolated.
+	foreignOwner := env.newAccount(ctx, t)
+	foreign := &models.Endpoint{
+		ID:           uuid.New(),
+		AccountID:    foreignOwner,
+		Method:       "GET",
+		Path:         "/foreign/only",
+		Prompt:       "return a foreign item",
+		ResponseType: models.ResponseTypeJSON,
+		Status:       models.StatusActive,
+	}
+	if err := repo.Create(ctx, foreign); err != nil {
+		t.Fatalf("Create foreign failed: %v", err)
+	}
+
+	endpoints, total, err := repo.List(ctx, owner, ListParams{Page: 1, Limit: 2})
 	if err != nil {
 		t.Fatalf("List failed: %v", err)
 	}

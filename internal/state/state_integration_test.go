@@ -8,6 +8,7 @@ import (
 
 	"github.com/profause/aimocksvr/internal/config"
 	"github.com/profause/aimocksvr/internal/database"
+	"github.com/profause/aimocksvr/internal/models"
 )
 
 // newTestStore connects to PostgreSQL. The test is skipped when
@@ -43,11 +44,11 @@ func TestStoreCRUD(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	if err := store.Create(ctx, "/users", "1", map[string]any{"id": 1, "name": "Ada"}); err != nil {
+	if err := store.Create(ctx, models.LegacyAccountID, "/users", "1", map[string]any{"id": 1, "name": "Ada"}); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
 
-	data, found, err := store.Get(ctx, "/users", "1")
+	data, found, err := store.Get(ctx, models.LegacyAccountID, "/users", "1")
 	if err != nil {
 		t.Fatalf("Get failed: %v", err)
 	}
@@ -58,22 +59,22 @@ func TestStoreCRUD(t *testing.T) {
 		t.Errorf("unexpected data: %+v", data)
 	}
 
-	if err := store.Update(ctx, "/users", "1", map[string]any{"id": 1, "name": "Bob"}); err != nil {
+	if err := store.Update(ctx, models.LegacyAccountID, "/users", "1", map[string]any{"id": 1, "name": "Bob"}); err != nil {
 		t.Fatalf("Update failed: %v", err)
 	}
-	data, _, _ = store.Get(ctx, "/users", "1")
+	data, _, _ = store.Get(ctx, models.LegacyAccountID, "/users", "1")
 	if data["name"] != "Bob" {
 		t.Errorf("expected updated name, got %+v", data)
 	}
 
-	ok, err := store.Delete(ctx, "/users", "1")
+	ok, err := store.Delete(ctx, models.LegacyAccountID, "/users", "1")
 	if err != nil {
 		t.Fatalf("Delete failed: %v", err)
 	}
 	if !ok {
 		t.Errorf("expected delete to report the resource existed")
 	}
-	if _, found, _ := store.Get(ctx, "/users", "1"); found {
+	if _, found, _ := store.Get(ctx, models.LegacyAccountID, "/users", "1"); found {
 		t.Errorf("expected resource to be gone")
 	}
 }
@@ -82,10 +83,10 @@ func TestStoreCollectionsAreIndependent(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	if err := store.Create(ctx, "/users", "1", map[string]any{"name": "Ada"}); err != nil {
+	if err := store.Create(ctx, models.LegacyAccountID, "/users", "1", map[string]any{"name": "Ada"}); err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if _, found, _ := store.Get(ctx, "/orders", "1"); found {
+	if _, found, _ := store.Get(ctx, models.LegacyAccountID, "/orders", "1"); found {
 		t.Errorf("expected /orders to be independent of /users")
 	}
 }
@@ -94,10 +95,10 @@ func TestStoreConflict(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	if err := store.Create(ctx, "/users", "1", map[string]any{"name": "Ada"}); err != nil {
+	if err := store.Create(ctx, models.LegacyAccountID, "/users", "1", map[string]any{"name": "Ada"}); err != nil {
 		t.Fatalf("first Create failed: %v", err)
 	}
-	if err := store.Create(ctx, "/users", "1", map[string]any{"name": "Bob"}); !errors.Is(err, ErrConflict) {
+	if err := store.Create(ctx, models.LegacyAccountID, "/users", "1", map[string]any{"name": "Bob"}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("expected ErrConflict, got %v", err)
 	}
 }
@@ -106,13 +107,13 @@ func TestStoreNotFound(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	if _, found, err := store.Get(ctx, "/users", "nope"); err != nil || found {
+	if _, found, err := store.Get(ctx, models.LegacyAccountID, "/users", "nope"); err != nil || found {
 		t.Fatalf("expected not found (found=%v err=%v)", found, err)
 	}
-	if err := store.Update(ctx, "/users", "nope", map[string]any{}); !errors.Is(err, ErrNotFound) {
+	if err := store.Update(ctx, models.LegacyAccountID, "/users", "nope", map[string]any{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound on update, got %v", err)
 	}
-	if ok, err := store.Delete(ctx, "/users", "nope"); err != nil || ok {
+	if ok, err := store.Delete(ctx, models.LegacyAccountID, "/users", "nope"); err != nil || ok {
 		t.Fatalf("expected not found delete (ok=%v err=%v)", ok, err)
 	}
 }

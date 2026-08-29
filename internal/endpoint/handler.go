@@ -9,18 +9,23 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/profause/aimocksvr/internal/api"
+	"github.com/profause/aimocksvr/internal/auth"
+	"github.com/profause/aimocksvr/internal/config"
+	"github.com/profause/aimocksvr/internal/models"
 )
 
 // Handler exposes the endpoint registry over HTTP. It contains no business
 // logic; all decisions are delegated to the Service.
 type Handler struct {
-	svc    Service
-	logger *zerolog.Logger
+	svc         Service
+	authEnabled bool
+	logger      *zerolog.Logger
 }
 
-// NewHandler creates an endpoint Handler.
-func NewHandler(svc Service, logger *zerolog.Logger) *Handler {
-	return &Handler{svc: svc, logger: logger}
+// NewHandler creates an endpoint Handler. cfg supplies whether auth is
+// enabled so the handler can enforce the control-plane ownership rules.
+func NewHandler(svc Service, cfg *config.Config, logger *zerolog.Logger) *Handler {
+	return &Handler{svc: svc, authEnabled: cfg.Auth.Enabled, logger: logger}
 }
 
 // Register wires the endpoint routes onto the given router group.
@@ -41,12 +46,17 @@ func (h *Handler) Register(r fiber.Router) {
 }
 
 func (h *Handler) Create(c fiber.Ctx) error {
+	owner, err := h.writeOwner(c)
+	if err != nil {
+		return api.Fail(c, fiber.StatusUnauthorized, api.CodeUnauthorized, "an account is required")
+	}
+
 	var in CreateEndpointParams
 	if err := c.Bind().JSON(&in); err != nil {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidJSON, "request body must be valid JSON")
 	}
 
-	e, err := h.svc.Create(c.Context(), in)
+	e, err := h.svc.Create(c.Context(), owner, in)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -59,7 +69,7 @@ func (h *Handler) Get(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidID, "invalid endpoint id")
 	}
 
-	e, err := h.svc.Get(c.Context(), id)
+	e, err := h.svc.Get(c.Context(), h.readOwner(c), id)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -72,12 +82,17 @@ func (h *Handler) Update(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidID, "invalid endpoint id")
 	}
 
+	owner, err := h.writeOwner(c)
+	if err != nil {
+		return api.Fail(c, fiber.StatusUnauthorized, api.CodeUnauthorized, "an account is required")
+	}
+
 	var in UpdateEndpointParams
 	if err := c.Bind().JSON(&in); err != nil {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidJSON, "request body must be valid JSON")
 	}
 
-	e, err := h.svc.Update(c.Context(), id, in)
+	e, err := h.svc.Update(c.Context(), owner, id, in)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -90,7 +105,12 @@ func (h *Handler) Delete(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidID, "invalid endpoint id")
 	}
 
-	if err := h.svc.Delete(c.Context(), id); err != nil {
+	owner, err := h.writeOwner(c)
+	if err != nil {
+		return api.Fail(c, fiber.StatusUnauthorized, api.CodeUnauthorized, "an account is required")
+	}
+
+	if err := h.svc.Delete(c.Context(), owner, id); err != nil {
 		return h.fail(c, err)
 	}
 	return api.OK(c, map[string]string{"id": id.String()})
@@ -102,7 +122,9 @@ func (h *Handler) List(c fiber.Ctx) error {
 		Limit: queryInt(c, "limit"),
 	}
 
-	endpoints, total, err := h.svc.List(c.Context(), p)
+	owner := h.readOwner(c)
+
+	endpoints, total, err := h.svc.List(c.Context(), owner, p)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -121,7 +143,7 @@ func (h *Handler) ListVersions(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidID, "invalid endpoint id")
 	}
 
-	versions, err := h.svc.ListVersions(c.Context(), id)
+	versions, err := h.svc.ListVersions(c.Context(), h.readOwner(c), id)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -138,7 +160,7 @@ func (h *Handler) DiffVersion(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, "invalid version")
 	}
 
-	changes, err := h.svc.Diff(c.Context(), id, version)
+	changes, err := h.svc.Diff(c.Context(), h.readOwner(c), id, version)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -155,7 +177,12 @@ func (h *Handler) Rollback(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeValidationError, "invalid version")
 	}
 
-	e, err := h.svc.Rollback(c.Context(), id, version)
+	owner, err := h.writeOwner(c)
+	if err != nil {
+		return api.Fail(c, fiber.StatusUnauthorized, api.CodeUnauthorized, "an account is required")
+	}
+
+	e, err := h.svc.Rollback(c.Context(), owner, id, version)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -168,7 +195,7 @@ func (h *Handler) ListHistory(c fiber.Ctx) error {
 		return api.Fail(c, fiber.StatusBadRequest, api.CodeInvalidID, "invalid endpoint id")
 	}
 
-	history, err := h.svc.ListHistory(c.Context(), id)
+	history, err := h.svc.ListHistory(c.Context(), h.readOwner(c), id)
 	if err != nil {
 		return h.fail(c, err)
 	}
@@ -176,11 +203,37 @@ func (h *Handler) ListHistory(c fiber.Ctx) error {
 }
 
 func (h *Handler) Stats(c fiber.Ctx) error {
-	stats, err := h.svc.Stats(c.Context())
+	stats, err := h.svc.Stats(c.Context(), h.readOwner(c))
 	if err != nil {
 		return h.fail(c, err)
 	}
 	return api.OK(c, stats)
+}
+
+// readOwner resolves the account to scope a read against. When auth is
+// disabled there is no identity, and when auth is enabled the caller may be a
+// legacy credential that carries no account — both fall back to the legacy
+// owner. The mock stays an open mock and the pre-account data stays visible.
+func (h *Handler) readOwner(c fiber.Ctx) uuid.UUID {
+	if id, ok := c.Locals(auth.IdentityKey).(auth.Identity); ok && id.AccountID != uuid.Nil {
+		return id.AccountID
+	}
+	return models.LegacyAccountID
+}
+
+// writeOwner resolves the account that owns a mutation. With auth disabled
+// every mutation belongs to the legacy account, preserving the open mock.
+// With auth enabled a mutation requires an authenticated account; a legacy
+// API-key/workspace-token identity (AccountID nil) is refused.
+func (h *Handler) writeOwner(c fiber.Ctx) (uuid.UUID, error) {
+	if !h.authEnabled {
+		return models.LegacyAccountID, nil
+	}
+	id, ok := c.Locals(auth.IdentityKey).(auth.Identity)
+	if !ok || id.AccountID == uuid.Nil {
+		return uuid.Nil, auth.ErrUnauthorized
+	}
+	return id.AccountID, nil
 }
 
 // fail maps service errors to HTTP responses.

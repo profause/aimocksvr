@@ -65,19 +65,23 @@ type FieldChange struct {
 	To    string `json:"to"`
 }
 
-// Service contains the business logic of the endpoint registry.
+// Service contains the business logic of the endpoint registry. Every method
+// is scoped to the owning account: resources owned by another account are
+// invisible (reads return ErrNotFound / empty), and Create/Import stamp the
+// owner from the caller. owner must be a concrete account id — the caller
+// resolves the legacy account when there is no authenticated one.
 type Service interface {
-	Create(ctx context.Context, in CreateEndpointParams) (*models.Endpoint, error)
-	Update(ctx context.Context, id uuid.UUID, in UpdateEndpointParams) (*models.Endpoint, error)
-	Delete(ctx context.Context, id uuid.UUID) error
-	Get(ctx context.Context, id uuid.UUID) (*models.Endpoint, error)
-	List(ctx context.Context, p ListParams) ([]models.Endpoint, int, error)
-	ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error)
-	ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error)
-	Import(ctx context.Context, items []ImportItem) (ImportResult, error)
-	Rollback(ctx context.Context, id uuid.UUID, version int) (*models.Endpoint, error)
-	Diff(ctx context.Context, id uuid.UUID, version int) ([]FieldChange, error)
-	Stats(ctx context.Context) (*DashboardStats, error)
+	Create(ctx context.Context, owner uuid.UUID, in CreateEndpointParams) (*models.Endpoint, error)
+	Update(ctx context.Context, owner, id uuid.UUID, in UpdateEndpointParams) (*models.Endpoint, error)
+	Delete(ctx context.Context, owner, id uuid.UUID) error
+	Get(ctx context.Context, owner, id uuid.UUID) (*models.Endpoint, error)
+	List(ctx context.Context, owner uuid.UUID, p ListParams) ([]models.Endpoint, int, error)
+	ListVersions(ctx context.Context, owner, endpointID uuid.UUID) ([]models.EndpointVersion, error)
+	ListHistory(ctx context.Context, owner, endpointID uuid.UUID) ([]models.RequestHistory, error)
+	Import(ctx context.Context, owner uuid.UUID, items []ImportItem) (ImportResult, error)
+	Rollback(ctx context.Context, owner, id uuid.UUID, version int) (*models.Endpoint, error)
+	Diff(ctx context.Context, owner, id uuid.UUID, version int) ([]FieldChange, error)
+	Stats(ctx context.Context, owner uuid.UUID) (*DashboardStats, error)
 }
 
 // DashboardStats holds the aggregated metrics shown on the dashboard.
@@ -105,7 +109,7 @@ func NewService(repo Repository, c cache.Cache, a ai.AIProvider, v validator.Val
 	return &service{repo: repo, cache: c, ai: a, validate: v, log: logger}
 }
 
-func (s *service) Create(ctx context.Context, in CreateEndpointParams) (*models.Endpoint, error) {
+func (s *service) Create(ctx context.Context, owner uuid.UUID, in CreateEndpointParams) (*models.Endpoint, error) {
 	if err := s.validateCreate(in); err != nil {
 		return nil, err
 	}
@@ -113,6 +117,7 @@ func (s *service) Create(ctx context.Context, in CreateEndpointParams) (*models.
 	now := time.Now().UTC()
 	e := &models.Endpoint{
 		ID:            uuid.New(),
+		AccountID:     owner,
 		Method:        strings.ToUpper(in.Method),
 		Path:          in.Path,
 		Description:   in.Description,
@@ -143,12 +148,12 @@ func (s *service) Create(ctx context.Context, in CreateEndpointParams) (*models.
 	return e, nil
 }
 
-func (s *service) Update(ctx context.Context, id uuid.UUID, in UpdateEndpointParams) (*models.Endpoint, error) {
+func (s *service) Update(ctx context.Context, owner, id uuid.UUID, in UpdateEndpointParams) (*models.Endpoint, error) {
 	if err := s.validateUpdate(in); err != nil {
 		return nil, err
 	}
 
-	existing, err := s.repo.FindByID(ctx, id)
+	existing, err := s.repo.FindByID(ctx, owner, id)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +204,7 @@ func (s *service) Update(ctx context.Context, id uuid.UUID, in UpdateEndpointPar
 	}
 
 	err = s.repo.WithTx(ctx, func(ctx context.Context) error {
-		if err := s.repo.Update(ctx, existing); err != nil {
+		if err := s.repo.Update(ctx, owner, existing); err != nil {
 			return err
 		}
 		return s.repo.CreateVersion(ctx, snapshotVersion(existing, schema, nextVersion(versions)))
@@ -217,8 +222,8 @@ func (s *service) Update(ctx context.Context, id uuid.UUID, in UpdateEndpointPar
 // and records the rollback as a new version, so the rollback itself stays in
 // the history and can be reverted. Rolling back to the current latest version
 // is rejected as a no-op.
-func (s *service) Rollback(ctx context.Context, id uuid.UUID, version int) (*models.Endpoint, error) {
-	existing, err := s.repo.FindByID(ctx, id)
+func (s *service) Rollback(ctx context.Context, owner, id uuid.UUID, version int) (*models.Endpoint, error) {
+	existing, err := s.repo.FindByID(ctx, owner, id)
 	if err != nil {
 		return nil, err
 	}
@@ -250,7 +255,7 @@ func (s *service) Rollback(ctx context.Context, id uuid.UUID, version int) (*mod
 	existing.UpdatedAt = time.Now().UTC()
 
 	err = s.repo.WithTx(ctx, func(ctx context.Context) error {
-		if err := s.repo.Update(ctx, existing); err != nil {
+		if err := s.repo.Update(ctx, owner, existing); err != nil {
 			return err
 		}
 		return s.repo.CreateVersion(ctx, snapshotVersion(existing, target.Schema, nextVersion(versions)))
@@ -267,8 +272,8 @@ func (s *service) Rollback(ctx context.Context, id uuid.UUID, version int) (*mod
 // Diff compares the version snapshot with the endpoint's latest version and
 // reports which versioned fields changed and how. An empty result means the
 // two snapshots are identical.
-func (s *service) Diff(ctx context.Context, id uuid.UUID, version int) ([]FieldChange, error) {
-	if _, err := s.repo.FindByID(ctx, id); err != nil {
+func (s *service) Diff(ctx context.Context, owner, id uuid.UUID, version int) ([]FieldChange, error) {
+	if _, err := s.repo.FindByID(ctx, owner, id); err != nil {
 		return nil, err
 	}
 
@@ -283,60 +288,60 @@ func (s *service) Diff(ctx context.Context, id uuid.UUID, version int) ([]FieldC
 	return diffVersions(target, &versions[0]), nil
 }
 
-func (s *service) Delete(ctx context.Context, id uuid.UUID) error {
-	e, err := s.repo.FindByID(ctx, id)
+func (s *service) Delete(ctx context.Context, owner, id uuid.UUID) error {
+	e, err := s.repo.FindByID(ctx, owner, id)
 	if err != nil {
 		return err
 	}
-	if err := s.repo.Delete(ctx, id); err != nil {
+	if err := s.repo.Delete(ctx, owner, id); err != nil {
 		return err
 	}
 	s.invalidateMethod(e.Method)
 	return nil
 }
 
-func (s *service) Get(ctx context.Context, id uuid.UUID) (*models.Endpoint, error) {
-	return s.repo.FindByID(ctx, id)
+func (s *service) Get(ctx context.Context, owner, id uuid.UUID) (*models.Endpoint, error) {
+	return s.repo.FindByID(ctx, owner, id)
 }
 
-func (s *service) List(ctx context.Context, p ListParams) ([]models.Endpoint, int, error) {
+func (s *service) List(ctx context.Context, owner uuid.UUID, p ListParams) ([]models.Endpoint, int, error) {
 	normalizePagination(&p)
-	return s.repo.List(ctx, p)
+	return s.repo.List(ctx, owner, p)
 }
 
-func (s *service) ListVersions(ctx context.Context, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
-	if _, err := s.repo.FindByID(ctx, endpointID); err != nil {
+func (s *service) ListVersions(ctx context.Context, owner, endpointID uuid.UUID) ([]models.EndpointVersion, error) {
+	if _, err := s.repo.FindByID(ctx, owner, endpointID); err != nil {
 		return nil, err
 	}
 	return s.repo.ListVersions(ctx, endpointID)
 }
 
-func (s *service) ListHistory(ctx context.Context, endpointID uuid.UUID) ([]models.RequestHistory, error) {
-	if _, err := s.repo.FindByID(ctx, endpointID); err != nil {
+func (s *service) ListHistory(ctx context.Context, owner, endpointID uuid.UUID) ([]models.RequestHistory, error) {
+	if _, err := s.repo.FindByID(ctx, owner, endpointID); err != nil {
 		return nil, err
 	}
 	return s.repo.ListHistory(ctx, endpointID)
 }
 
-func (s *service) Stats(ctx context.Context) (*DashboardStats, error) {
+func (s *service) Stats(ctx context.Context, owner uuid.UUID) (*DashboardStats, error) {
 	since := time.Now().Add(-24 * time.Hour)
 
-	total, err := s.repo.CountEndpoints(ctx)
+	total, err := s.repo.CountEndpoints(ctx, owner)
 	if err != nil {
 		return nil, fmt.Errorf("stats: count endpoints: %w", err)
 	}
 
-	requests, err := s.repo.CountRecentRequests(ctx, since)
+	requests, err := s.repo.CountRecentRequests(ctx, owner, since)
 	if err != nil {
 		return nil, fmt.Errorf("stats: count recent requests: %w", err)
 	}
 
-	latency, err := s.repo.AvgLatency(ctx, since)
+	latency, err := s.repo.AvgLatency(ctx, owner, since)
 	if err != nil {
 		return nil, fmt.Errorf("stats: avg latency: %w", err)
 	}
 
-	errorRate, err := s.repo.ErrorRate(ctx, since)
+	errorRate, err := s.repo.ErrorRate(ctx, owner, since)
 	if err != nil {
 		return nil, fmt.Errorf("stats: error rate: %w", err)
 	}
@@ -355,7 +360,7 @@ func (s *service) Stats(ctx context.Context) (*DashboardStats, error) {
 // stored; a schema that does not compile is dropped with a warning instead of
 // failing the whole import, keeping the registry usable without a model
 // backend.
-func (s *service) Import(ctx context.Context, items []ImportItem) (ImportResult, error) {
+func (s *service) Import(ctx context.Context, owner uuid.UUID, items []ImportItem) (ImportResult, error) {
 	var result ImportResult
 	now := time.Now().UTC()
 
@@ -363,6 +368,7 @@ func (s *service) Import(ctx context.Context, items []ImportItem) (ImportResult,
 		for _, item := range items {
 			e := &models.Endpoint{
 				ID:            uuid.New(),
+				AccountID:     owner,
 				Method:        strings.ToUpper(item.Method),
 				Path:          item.Path,
 				Description:   item.Description,
@@ -591,6 +597,7 @@ func snapshotVersion(e *models.Endpoint, schema string, version int) *models.End
 	return &models.EndpointVersion{
 		ID:            uuid.New(),
 		EndpointID:    e.ID,
+		AccountID:     e.AccountID,
 		Method:        e.Method,
 		Path:          e.Path,
 		Description:   e.Description,
