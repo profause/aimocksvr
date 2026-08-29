@@ -6,12 +6,6 @@ services:
     image: mocksvr:latest
     container_name: mocksvr-app
 
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-
     environment:
       MOCKSVR_DASHBOARD_ENABLED: ${MOCKSVR_DASHBOARD_ENABLED:-true}
 
