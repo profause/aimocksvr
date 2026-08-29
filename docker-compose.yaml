@@ -1,30 +1,4 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: mocksvr-postgres
-    environment:
-      POSTGRES_USER: mocksvr
-      POSTGRES_PASSWORD: mocksvr
-      POSTGRES_DB: mocksvr
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U mocksvr -d mocksvr"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    container_name: mocksvr-redis
-    volumes:
-      - redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   app:
     build:
       context: .
@@ -39,17 +13,17 @@ services:
         condition: service_healthy
 
     environment:
-      MOCKSVR_DASHBOARD_ENABLED: "true"
+      MOCKSVR_DASHBOARD_ENABLED: ${MOCKSVR_DASHBOARD_ENABLED:-true}
 
       MOCKSVR_SERVER_HOST: 0.0.0.0
       MOCKSVR_SERVER_PORT: "8080"
 
-      MOCKSVR_DATABASE_URL: postgres://mocksvr:mocksvr@postgres:5432/mocksvr?sslmode=disable
+      MOCKSVR_DATABASE_URL: ${MOCKSVR_DATABASE_URL:-postgres://mocksvr:mocksvr@postgres:5432/mocksvr?sslmode=disable}
 
-      MOCKSVR_CACHE_REDIS_ADDR: redis:6379
-      MOCKSVR_CACHE_REDIS_PASSWORD: ""
-      MOCKSVR_CACHE_REDIS_DB: "0"
-      MOCKSVR_CACHE_REDIS_TTL: 60s
+      MOCKSVR_CACHE_REDIS_ADDR: ${MOCKSVR_CACHE_REDIS_ADDR:-redis:6379}
+      MOCKSVR_CACHE_REDIS_PASSWORD: ${MOCKSVR_CACHE_REDIS_PASSWORD:-}
+      MOCKSVR_CACHE_REDIS_DB: ${MOCKSVR_CACHE_REDIS_DB:-0}
+      MOCKSVR_CACHE_REDIS_TTL: ${MOCKSVR_CACHE_REDIS_TTL:-60s}
 
       MOCKSVR_AI_PROVIDER: ${MOCKSVR_AI_PROVIDER:-}
       MOCKSVR_AI_BASE_URL: ${MOCKSVR_AI_BASE_URL:-}
@@ -69,7 +43,3 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
-
-volumes:
-  postgres_data:
-  redis_data:
