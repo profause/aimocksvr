@@ -118,7 +118,9 @@ func (r *repository) FindByID(ctx context.Context, id uuid.UUID) (*models.Endpoi
 }
 
 func (r *repository) List(ctx context.Context, p ListParams) ([]models.Endpoint, int, error) {
-	var endpoints []models.Endpoint
+	// Initialize to a non-nil empty slice so the JSON payload serializes as
+	// [] rather than null when there are no endpoints.
+	endpoints := make([]models.Endpoint, 0)
 
 	count, err := r.db.NewSelect().Model((*models.Endpoint)(nil)).Count(ctx)
 	if err != nil {
