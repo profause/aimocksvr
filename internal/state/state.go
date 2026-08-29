@@ -60,6 +60,7 @@ func NewStore(db *bun.DB) Store {
 
 func (s *postgresStore) Create(ctx context.Context, accountID uuid.UUID, collection, resourceID string, data map[string]any) error {
 	resource := &models.MockResource{
+		ID:         uuid.New(),
 		AccountID:  accountID,
 		Collection: collection,
 		ResourceID: resourceID,
