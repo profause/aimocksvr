@@ -59,7 +59,7 @@ const defaultValues: EndpointFormValues = {
   status: 'active',
   request_schema: '',
   error_sim: '',
-  public: true,
+  public: false,
 }
 
 function getFormValues(endpoint: Endpoint): EndpointFormValues {
@@ -262,7 +262,7 @@ export function EndpointForm({ open, onOpenChange, endpoint, onSuccess }: Endpoi
           <div className="flex items-center justify-between rounded-lg border p-3">
             <div className="flex flex-col gap-1">
               <Label htmlFor="public">Public Endpoint</Label>
-              <p className="text-muted-foreground text-xs">No authentication required</p>
+              <p className="text-muted-foreground text-xs">Off by default; only enable to serve it without authentication</p>
             </div>
             <Switch
               id="public"

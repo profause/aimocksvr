@@ -730,7 +730,10 @@ func TestServiceCreateSnapshotsFullState(t *testing.T) {
 	}
 }
 
-func TestServiceCreateDefaultsPublicTrue(t *testing.T) {
+// TestServiceCreateDefaultsPrivate: creating an endpoint without a public
+// flag yields a private endpoint, so mock endpoints are locked down by default
+// and openness must be explicit.
+func TestServiceCreateDefaultsPrivate(t *testing.T) {
 	svc := newServiceWithRepo(newFakeRepo())
 
 	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
@@ -741,27 +744,29 @@ func TestServiceCreateDefaultsPublicTrue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)
 	}
-	if !e.Public {
-		t.Error("expected public to default to true")
+	if e.Public {
+		t.Error("expected public to default to false")
 	}
 
 	versions, err := svc.ListVersions(context.Background(), testOwner, e.ID)
 	if err != nil {
 		t.Fatalf("ListVersions failed: %v", err)
 	}
-	if !versions[0].Public {
-		t.Error("expected snapshot public to default to true")
+	if versions[0].Public {
+		t.Error("expected snapshot public to default to false")
 	}
 }
 
 func TestServiceUpdatePublicCreatesVersionAndDiff(t *testing.T) {
 	svc := newServiceWithRepo(newFakeRepo())
 	private := false
+	open := true
 
 	e, err := svc.Create(context.Background(), testOwner, CreateEndpointParams{
 		Method: "GET",
 		Path:   "/users",
 		Prompt: "return users",
+		Public: &open,
 	})
 	if err != nil {
 		t.Fatalf("Create failed: %v", err)

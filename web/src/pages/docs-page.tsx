@@ -484,8 +484,8 @@ curl -X POST http://localhost:8080/api/v1/imports/openapi \\
 # => {"success":true,"data":{"kind":"jwt","name":"dev"}}`}</CodeBlock>
         <SubHeading id="private-endpoints">Private Endpoints</SubHeading>
         <p className="text-muted-foreground">
-          Mock endpoints are public by default. Set <InlineCode>"public": false</InlineCode> when
-          creating or updating an endpoint to require authentication.
+          Mock endpoints are private by default. Set <InlineCode>"public": true</InlineCode> when
+          creating or updating an endpoint to serve it without authentication.
         </p>
         <CodeBlock>{`curl -X POST http://localhost:8080/api/v1/endpoints \\
   -H 'Content-Type: application/json' \\
