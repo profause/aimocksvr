@@ -189,10 +189,12 @@ func nonNilParams(params map[string]string) map[string]string {
 }
 
 // hasIdentity reports whether the auth middleware stored an identity for the
-// current request.
+// current request. A stored identity is enough: account identities carry an
+// account UUID and no name, API-key/workspace-token/legacy-JWT identities
+// carry a name from the configured credentials.
 func hasIdentity(c fiber.Ctx) bool {
 	id, ok := c.Locals(auth.IdentityKey).(auth.Identity)
-	return ok && id.Kind != "" && id.Name != ""
+	return ok && id.Kind != ""
 }
 
 func headersMap(h map[string][]string) http.Header {

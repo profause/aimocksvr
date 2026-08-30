@@ -25,7 +25,7 @@ type EndpointVersion struct {
 	Status        string    `bun:"status,type:varchar(20),notnull,default:'active'" json:"status"`
 	RequestSchema string    `bun:"request_schema,type:text,notnull,default:''" json:"request_schema"`
 	ErrorSim      string    `bun:"error_sim,type:text,notnull,default:''" json:"error_sim"`
-	Public        bool      `bun:"public,notnull,default:true" json:"public"`
+	Public        bool      `bun:"public,notnull,default:false" json:"public"`
 	Schema        string    `bun:"schema,type:text" json:"schema"`
 	Version       int       `bun:"version,type:int,notnull" json:"version"`
 	CreatedAt     time.Time `bun:"created_at,type:timestamptz,notnull,default:now()" json:"created_at"`

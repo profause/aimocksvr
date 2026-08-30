@@ -127,7 +127,7 @@ func (s *service) Create(ctx context.Context, owner uuid.UUID, in CreateEndpoint
 		Status:        defaultString(in.Status, models.StatusActive),
 		RequestSchema: strings.TrimSpace(in.RequestSchema),
 		ErrorSim:      strings.TrimSpace(in.ErrorSim),
-		Public:        boolDefault(in.Public, true),
+		Public:        boolDefault(in.Public, false),
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}

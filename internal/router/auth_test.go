@@ -264,12 +264,25 @@ func TestAuthenticationViaRegistryAPI(t *testing.T) {
 		t.Fatalf("expected 200 on private endpoint with JWT, got %d", resp.StatusCode)
 	}
 
-	// A public endpoint is served without any credential. public defaults to
-	// true when omitted.
+	// The account JWT that owns the endpoint is itself a valid serving
+	// credential; account identities carry an account uuid and no name.
+	withAccount := httptest.NewRequest("GET", "/secret", nil)
+	withAccount.Header.Set("Authorization", "Bearer "+accountJWT)
+	if resp, err = app.Test(withAccount); err != nil {
+		t.Fatalf("GET /secret with account JWT failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 on private endpoint with account JWT, got %d", resp.StatusCode)
+	}
+
+	// A public endpoint is served without any credential. Endpoints are
+	// private by default, so openness must be requested explicitly.
 	req = httptest.NewRequest("POST", "/api/v1/endpoints", strings.NewReader(`{
 		"method": "get",
 		"path": "/open",
-		"prompt": "a public endpoint"
+		"prompt": "a public endpoint",
+		"public": true
 	}`))
 	req.Header.Set("Authorization", "Bearer "+accountJWT)
 	resp, err = app.Test(req)
@@ -289,6 +302,81 @@ func TestAuthenticationViaRegistryAPI(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != fiber.StatusOK {
 		t.Fatalf("expected 200 on public endpoint, got %d", resp.StatusCode)
+	}
+}
+
+// TestControlPlaneReadsRequireCredential pins the reports that
+// /api/v1/endpoints and /api/v1/stats did not validate JWTs and that
+// /auth/whoami returned 401 even with a valid JWT. With auth enabled every
+// /api/v1 route requires a credential, and an account JWT satisfies it;
+// those endpoints only look "open" under the default MOCKSVR_AUTH_ENABLED=false.
+func TestControlPlaneReadsRequireCredential(t *testing.T) {
+	app := newAuthApp(t)
+
+	for _, path := range []string{"/api/v1/endpoints", "/api/v1/stats", "/api/v1/auth/whoami"} {
+		resp, err := app.Test(httptest.NewRequest("GET", path, nil))
+		if err != nil {
+			t.Fatalf("GET %s failed: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != fiber.StatusUnauthorized {
+			t.Errorf("expected 401 on anonymous GET %s, got %d", path, resp.StatusCode)
+		}
+	}
+
+	regReq := httptest.NewRequest("POST", "/api/v1/auth/register", strings.NewReader(`{
+		"email": "reader@example.com",
+		"password": "correct-horse-battery-staple"
+	}`))
+	regReq.Header.Set("Content-Type", "application/json")
+	resp, err := app.Test(regReq)
+	if err != nil {
+		t.Fatalf("account registration failed: %v", err)
+	}
+	regBody, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusCreated {
+		t.Fatalf("expected 201 on registration, got %d (body %q)", resp.StatusCode, regBody)
+	}
+	var regEnvelope struct {
+		Data struct {
+			Token string `json:"token"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(regBody, &regEnvelope); err != nil {
+		t.Fatalf("decode registration response: %v", err)
+	}
+	accountJWT := regEnvelope.Data.Token
+	if accountJWT == "" {
+		t.Fatal("expected an account token from registration")
+	}
+
+	for _, path := range []string{"/api/v1/endpoints", "/api/v1/stats", "/api/v1/auth/whoami"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer "+accountJWT)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatalf("GET %s with account JWT failed: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != fiber.StatusOK {
+			t.Errorf("expected 200 on GET %s with account JWT, got %d", path, resp.StatusCode)
+		}
+	}
+
+	whoami := httptest.NewRequest("GET", "/api/v1/auth/whoami", nil)
+	whoami.Header.Set("Authorization", "Bearer "+accountJWT)
+	resp, err = app.Test(whoami)
+	if err != nil {
+		t.Fatalf("whoami with account JWT failed: %v", err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != fiber.StatusOK {
+		t.Fatalf("expected 200 on whoami, got %d", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), auth.KindAccount) {
+		t.Errorf("expected account identity in whoami, got %q", body)
 	}
 }
 

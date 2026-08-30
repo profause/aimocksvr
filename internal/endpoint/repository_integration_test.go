@@ -176,6 +176,70 @@ func TestRepositoryConflict(t *testing.T) {
 	}
 }
 
+func TestRepositoryPersistsPublicFlag(t *testing.T) {
+	env := newTestDB(t)
+	repo := env.repo
+	ctx := context.Background()
+	owner := env.newAccount(ctx, t)
+
+	// An endpoint created without an explicit public flag stays private. This
+	// guards the bun insert path: a zero-valued bool tagged as the column
+	// default must not silently resolve to the (old) public default at the
+	// SQL layer.
+	implicit := &models.Endpoint{
+		ID:           uuid.New(),
+		AccountID:    owner,
+		Method:       "GET",
+		Path:         "/implicit",
+		Prompt:       "private by default",
+		ResponseType: models.ResponseTypeJSON,
+		Status:       models.StatusActive,
+	}
+	if err := repo.Create(ctx, implicit); err != nil {
+		t.Fatalf("Create implicit failed: %v", err)
+	}
+
+	stored, err := repo.FindByID(ctx, owner, implicit.ID)
+	if err != nil {
+		t.Fatalf("FindByID failed: %v", err)
+	}
+	if stored.Public {
+		t.Error("expected public=false to persist, got true (bun DEFAULT override?)")
+	}
+
+	active, err := repo.ListActiveByMethod(ctx, "GET")
+	if err != nil {
+		t.Fatalf("ListActiveByMethod failed: %v", err)
+	}
+	for _, e := range active {
+		if e.ID == implicit.ID && e.Public {
+			t.Error("ListActiveByMethod returned public=true for an implicitly private endpoint")
+		}
+	}
+
+	// An explicit public:true is honored and read back as true.
+	explicit := &models.Endpoint{
+		ID:           uuid.New(),
+		AccountID:    owner,
+		Method:       "GET",
+		Path:         "/explicit",
+		Prompt:       "explicitly public",
+		ResponseType: models.ResponseTypeJSON,
+		Status:       models.StatusActive,
+		Public:       true,
+	}
+	if err := repo.Create(ctx, explicit); err != nil {
+		t.Fatalf("Create explicit failed: %v", err)
+	}
+	stored, err = repo.FindByID(ctx, owner, explicit.ID)
+	if err != nil {
+		t.Fatalf("FindByID explicit failed: %v", err)
+	}
+	if !stored.Public {
+		t.Error("expected public=true to persist, got false")
+	}
+}
+
 func TestRepositoryList(t *testing.T) {
 	env := newTestDB(t)
 	repo := env.repo

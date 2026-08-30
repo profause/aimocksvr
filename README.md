@@ -93,8 +93,9 @@ nothing is skipped). Each version is a full snapshot of the endpoint — method,
 path, description, prompt, response type, stateful, status, `request_schema`,
 `error_sim`, `public` and the response schema. Create accepts `request_schema`
 (a JSON Schema string for the request body), `error_sim` (a JSON config string
-for failure simulation) and `public` (whether the mock endpoint is served
-without authentication); update accepts the first two as optional strings and
+for failure simulation) and `public` (defaults to `false`, so a mock endpoint
+is never served without authentication unless explicitly opened); update
+accepts the first two as optional strings and
 `public` as an optional boolean, where omitting a field keeps the current one
 and `""` clears the string fields.
 
@@ -148,8 +149,8 @@ When auth is enabled:
 - The control plane (`/api/v1/*`) requires a valid credential, except
   `POST /api/v1/auth/token`, which mints a short-lived JWT from a valid API key
   or workspace token.
-- Mock endpoints are public by default. Set `"public": false` when creating or
-  updating an endpoint to require a valid credential; the `public` flag is
+- Mock endpoints are private by default. Set `"public": true` when creating or
+  updating an endpoint to serve it without a credential; the `public` flag is
   versioned like every other field.
 
 ```sh
@@ -168,6 +169,13 @@ curl -X POST http://localhost:8080/api/v1/endpoints \
 
 curl http://localhost:8080/secret                      # 401 UNAUTHORIZED
 curl http://localhost:8080/secret -H 'X-API-Key: sk_test_123'   # 200
+
+# Public endpoints are an explicit opt-in
+curl -X POST http://localhost:8080/api/v1/endpoints \
+  -H 'Content-Type: application/json' -H 'X-API-Key: sk_test_123' \
+  -d '{"method":"get","path":"/status","prompt":"a public endpoint","public":true}'
+
+curl http://localhost:8080/status                      # 200, no credential
 ```
 
 ## Dynamic routing
